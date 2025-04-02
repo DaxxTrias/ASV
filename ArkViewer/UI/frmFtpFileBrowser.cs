@@ -23,6 +23,23 @@ namespace ARKViewer
         SftpClient sftpClient = null;
 
 
+        private void ownerDrawCombo_DrawItem(object sender, DrawItemEventArgs e)
+        {
+            if (e.Index < 0) return;
+
+            System.Windows.Forms.ComboBox comboBox = sender as System.Windows.Forms.ComboBox;
+
+            e.DrawBackground();
+
+            Rectangle r1 = e.Bounds;
+            r1.Width = r1.Width;
+
+            using (SolidBrush sb = new SolidBrush(comboBox.ForeColor))
+            {
+                string drawText = comboBox.Items[e.Index].ToString();
+                e.Graphics.DrawString(drawText, e.Font, sb, r1);
+            }
+        }
         private void LoadWindowSettings()
         {
             var savedWindow = ARKViewer.Program.ProgramConfig.Windows.FirstOrDefault(w => w.Name == this.Name);
@@ -365,7 +382,7 @@ namespace ARKViewer
                     ftpClient.ValidateCertificate += FtpClient_ValidateCertificate1;
 
 
-                    ftpClient.Connect();
+                    ftpClient.AutoConnect();
 
 
                     //not found, please select
@@ -439,7 +456,7 @@ namespace ARKViewer
 
             ListViewItem selectedItem = lvwFileBrowser.SelectedItems[0];
             ASVFtpItem browseItem = (ASVFtpItem)selectedItem.Tag;
-            btnSelect.Enabled = browseItem.FullName.EndsWith(".ark") || browseItem.FullName.EndsWith(".gz");
+            btnSelect.Enabled = browseItem.FullName.EndsWith(".ark") || browseItem.FullName.EndsWith(".gz") || browseItem.FullName.EndsWith(".asv");
         }
 
         private void btnSelect_Click(object sender, EventArgs e)

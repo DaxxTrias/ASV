@@ -36,6 +36,7 @@ namespace ASVPack.Models
         [DataMember] public string Rig1 { get; set; } = "";
         [DataMember] public string Rig2 { get; set; } = "";
         [DataMember] public float Maturation { get; set; } = 100;
+        [DataMember] public List<string> Traits { get; set; } = new List<string>();
 
         public override bool Equals(object? obj)
         {
@@ -100,7 +101,12 @@ namespace ASVPack.Models
             BaseStats = new byte[12] { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
             if (statusObject != null)
             {
-                for (var i = 0; i < BaseStats.Length; i++) BaseStats[i] = (byte)statusObject.GetPropertyValue<int>("NumberOfLevelUpPointsApplied", i,0);
+                for (var i = 0; i < BaseStats.Length; i++)
+                {
+                    var pointsApplied = (byte)(statusObject.GetPropertyValue<uint>("NumberOfLevelUpPointsApplied", i) ?? 0);
+
+                    BaseStats[i] = (byte)(pointsApplied);
+                }
             }
 
             Colors = new byte[6] { 0, 0, 0, 0, 0, 0 };
@@ -215,7 +221,7 @@ namespace ASVPack.Models
 
             }
 
-            DinoId = creatureObject.GetPropertyValue<int>("DinoID1").ToString() + creatureObject.GetPropertyValue<int>("DinoID2").ToString();
+            DinoId = Id.ToString();
 
 
         }

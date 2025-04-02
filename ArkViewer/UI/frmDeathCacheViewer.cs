@@ -135,8 +135,8 @@ namespace ARKViewer
                         {
 
                             string qualityName = "";
-                            Color backColor = SystemColors.Window;
-                            Color foreColor = SystemColors.WindowText;
+                            Color backColor = lvwInventory.BackColor;
+                            Color foreColor = lvwInventory.ForeColor;
                             if (invItem.Rating.HasValue)
                             {
                                 var itemQuality = Program.GetQualityByRating(invItem.Rating.Value);
@@ -144,7 +144,7 @@ namespace ARKViewer
                                 backColor = itemQuality.QualityColor;
                                 foreColor = Program.IdealTextColor(backColor);
                             }
-                            
+
 
                             ListViewItem newItem = new ListViewItem(itemName);
                             newItem.BackColor = backColor;

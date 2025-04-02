@@ -21,6 +21,11 @@ namespace AsaSavegameToolkit.Types
 
         public string Value => value.ToString();
 
+        public AsaObjectReference(string objectValue)
+        {
+            value = objectValue;
+        }
+
         public AsaObjectReference(AsaArchive archive, bool useNameTable)
         {
             if (useNameTable && archive.NameTable.Count>0)
@@ -41,7 +46,15 @@ namespace AsaSavegameToolkit.Types
             }
 
             int objectType = archive.ReadInt();
-            if (objectType == 0)
+
+
+            if(objectType == -1)
+            {
+                type = TYPE_UNKNOWN;
+                value = string.Empty;
+
+            }
+            else if (objectType == 0)
             {
                 type = TYPE_ID;
                 value = archive.ReadInt();
@@ -61,5 +74,10 @@ namespace AsaSavegameToolkit.Types
 
         }
 
+        public AsaObjectReference(Guid guid)
+        {
+            type = TYPE_UUID;
+            value = guid.ToString();
+        }
     }
 }

@@ -1,14 +1,23 @@
-﻿using Newtonsoft.Json;
+﻿using AsaSavegameToolkit;
+using Newtonsoft.Json;
+using SavegameToolkit.Arrays;
+using SavegameToolkit.Propertys;
+using SavegameToolkit.Structs;
+using SavegameToolkit;
 using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Linq;
 using System.Reflection.Emit;
+using System.Reflection.Metadata;
+using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
 using System.Text;
 using System.Threading.Tasks;
+using System.Net;
 
 
 namespace ASVPack.Models
@@ -20,6 +29,8 @@ namespace ASVPack.Models
 
         public string LoadedFilename { get; set; } = string.Empty;
         [DataMember] public string MapFilename { get; set; } = "TheIsland.ark";
+        [DataMember] public int MapDay { get; set; } = 0;
+        [DataMember] public DateTime MapTime { get; set; } = DateTime.Now.Date;
         [DataMember] public DateTime ContentDate { get; set; } = DateTime.Now;
         [DataMember] public long ExportedForTribe { get; set; } = 0;
         [DataMember] public long ExportedForPlayer { get; set; } = 0;
@@ -172,7 +183,8 @@ namespace ASVPack.Models
                     Tribes = loaded.Tribes;
                     DroppedItems = loaded.DroppedItems;
                     LocalProfile = loaded.LocalProfile;
-
+                    MapDay = loaded.MapDay;
+                    MapTime = loaded.MapTime;
                 }
 
             }
@@ -187,11 +199,6 @@ namespace ASVPack.Models
         {
             return JsonConvert.SerializeObject(this);
         }
-
-
-
-
-
 
 
         public void ExportJsonAll(string exportPath)
@@ -209,20 +216,206 @@ namespace ASVPack.Models
             ;
         }
 
+        public void ExportClusterToJson(string clusterFolder, string clusterFilename = "")
+        {
+            if (!Directory.Exists(clusterFolder)) return;
+
+            if (!string.IsNullOrEmpty(clusterFolder) && Directory.Exists(clusterFolder))
+            {
+
+                var profileFilenames = Directory.EnumerateFiles(clusterFolder, "*");
+                Parallel.ForEach(profileFilenames, fileName =>
+                //profileFilenames.AsParallel().ForAll(fileName =>
+                {
+                    long itemOwnerId = 0;
+                    long.TryParse(System.IO.Path.GetFileNameWithoutExtension(fileName), out itemOwnerId);
+
+                    try
+                    {
+                        using (Stream clusterFileStream = new FileStream(fileName, FileMode.Open))
+                        {
+                            using (ArkArchive clusterArchive = new ArkArchive(clusterFileStream))
+                            {
+                                ArkCloudInventory cloudInventory = new ArkCloudInventory();
+                                cloudInventory.ReadBinary(clusterArchive, ReadingOptions.Create().WithBuildComponentTree(true).WithDataFilesObjectMap(false).WithGameObjects(true).WithGameObjectProperties(true));
+
+                                PropertyStruct propTest = cloudInventory.GetTypedProperty<PropertyStruct>("MyArkData");
+                                StructPropertyList? propList = propTest.Value as StructPropertyList;
+                                if (propList != null)
+                                {
+                                    var itemList = propList.GetTypedProperty<PropertyArray>("ArkItems");
+                                    if (itemList != null)
+                                    {
+                                        foreach (StructPropertyList testItem in (ArkArrayStruct)itemList.Value)
+                                        {
+                                            try
+                                            {
+                                                var item = testItem.GetTypedProperty<PropertyStruct>("ArkTributeItem");
+
+                                                var isInitialItem = ((StructPropertyList)item.Value).GetPropertyValue<bool>("bIsInitialItem");
+                                                if (!isInitialItem)
+                                                {
+                                                    ContentItem newItem = new ContentItem((StructPropertyList)item.Value);
+                                                    if (newItem.Quantity == 0)
+                                                    {
+                                                        newItem.Quantity = 1;
+                                                    }
+
+                                                    //targetPlayer.Inventory.Items.Add(newItem);
+                                                }
+                                            }
+                                            catch
+                                            {
+
+                                            }
+
+
+                                        }
+
+                                    }
+
+                                    var dinoList = propList.GetTypedProperty<PropertyArray>("ArkTamedDinosData");
+                                    if (dinoList != null && dinoList.Value != null)
+                                    {
+
+
+                                        foreach (StructPropertyList dinoData in (ArkArrayStruct)dinoList.Value)
+                                        {
+                                            var byteArray = dinoData.GetTypedProperty<PropertyArray>("DinoData");
+                                            int uploadTime = dinoData.GetPropertyValue<int>("UploadTime");
+
+
+                                            ArkArrayUInt8? creatureBytes = byteArray.Value as ArkArrayUInt8;
+                                            if (creatureBytes != null)
+                                            {
+
+
+                                                var cryoStream = new System.IO.MemoryStream(creatureBytes.ToArray<byte>());
+
+                                                using (ArkArchive uploadArchive = new ArkArchive(cryoStream))
+                                                {
+                                                    // number of serialized objects
+                                                    int objCount = uploadArchive.ReadInt();
+                                                    if (objCount != 0)
+                                                    {
+                                                        var storedGameObjects = new List<GameObject>(objCount);
+                                                        for (int oi = 0; oi < objCount; oi++)
+                                                        {
+                                                            storedGameObjects.Add(new GameObject(uploadArchive));
+                                                        }
+
+                                                        foreach (var ob in storedGameObjects)
+                                                        {
+                                                            ob.LoadProperties(uploadArchive, new GameObject(), 0);
+                                                        }
+
+                                                        var creatureObject = storedGameObjects[0];
+                                                        var statusObject = storedGameObjects[1];
+
+                                                        // assume the first object is the creature object
+                                                        string creatureActorId = creatureObject.Names[0].ToString();
+
+                                                        // the tribe name is stored in `TamerString`, non-cryoed creatures have the property `TribeName` for that.
+                                                        if (creatureObject.GetPropertyValue<string>("TribeName")?.Length == 0 && creatureObject.GetPropertyValue<string>("TamerString")?.Length > 0)
+                                                            creatureObject.Properties.Add(new PropertyString("TribeName", creatureObject.GetPropertyValue<string>("TamerString")));
+
+
+                                                        ContentTamedCreature tamedDino = new ContentTamedCreature(uploadTime, creatureObject, statusObject);
+
+                                                        if (tamedDino.UploadedTimeInGame != 0)
+                                                        {
+                                                            tamedDino.UploadedTime = DateTime.UnixEpoch.AddSeconds(tamedDino.UploadedTimeInGame);
+                                                        }
+
+
+                                                        var targetTribe = Tribes.FirstOrDefault(t => t.TribeId == tamedDino.TargetingTeam);
+                                                        if (targetTribe == null)
+                                                        {
+                                                            //see if we can find a matching steam player in existing tribe
+                                                            var ownerTribe = Tribes.FirstOrDefault(t => t.Players.LongCount(p => p.NetworkId == itemOwnerId.ToString()) > 0);
+                                                            if (ownerTribe != null)
+                                                            {
+                                                                targetTribe = ownerTribe;
+                                                            }
+
+                                                            if (targetTribe == null)
+                                                            {
+                                                                targetTribe = new ContentTribe()
+                                                                {
+                                                                    TribeName = tamedDino.TribeName ?? tamedDino.TamerName ?? tamedDino.ImprinterName,
+                                                                    TribeId = tamedDino.TargetingTeam
+                                                                };
+                                                                if (!string.IsNullOrEmpty(targetTribe.TribeName))
+                                                                {
+                                                                    targetTribe.Tames.Add(tamedDino);
+                                                                    Tribes.Add(targetTribe);
+                                                                }
+                                                            }
+
+                                                        }
+                                                        if (targetTribe != null)
+                                                        {
+                                                            targetTribe.Tames.Add(tamedDino);
+                                                            if (string.IsNullOrEmpty(tamedDino.TribeName))
+                                                            {
+                                                                tamedDino.TribeName = targetTribe.TribeName;
+                                                            }
+                                                        }
+
+
+                                                    }
+
+                                                }
+
+
+                                            }
+
+                                        }
+
+                                    }
+
+                                }
+                            }
+                        }
+                    }
+                    catch
+                    {
+                        //ignore
+                    }
+
+                }
+                );
+
+            }
+
+        }
+
+
         public void ExportJsonWild(string exportFilename)
         {
 
             string exportFolder = Path.GetDirectoryName(exportFilename)??"";
             if (!Directory.Exists(exportFolder)) Directory.CreateDirectory(exportFolder);
-
+            if (File.Exists(exportFilename)) File.Delete(exportFilename);
             using (FileStream fs = File.Create(exportFilename))
             {
                 using (StreamWriter sw = new StreamWriter(fs))
                 {
                     using (JsonTextWriter jw = new JsonTextWriter(sw))
                     {
+
+                        jw.WriteStartObject();
+                        jw.WritePropertyName("map");
+                        jw.WriteValue(MapFilename);
+                        jw.WritePropertyName("day");
+                        jw.WriteValue(MapDay);
+                        jw.WritePropertyName("time");
+                        jw.WriteValue(MapTime.ToString("HH:mm"));
+                        jw.WritePropertyName("data");
+
                         //var creatureList = Program.ProgramConfig.SortCommandLineExport ? gd.WildCreatures.OrderBy(o => o.ClassName).Cast<ArkWildCreature>() : gd.WildCreatures;
                         var creatureList = WildCreatures.OrderBy(o => o.ClassName).ToList();
+                        
                         jw.WriteStartArray();
 
                         //Creature, Sex, Lvl, Lat, Lon, HP, Stam, Weight, Speed, Food, Oxygen, Craft, C0, C1, C2, C3, C4, C5              
@@ -299,11 +492,14 @@ namespace ASVPack.Models
                             jw.WritePropertyName("tameable");
                             jw.WriteValue(creature.IsTameable);
 
+                            jw.WritePropertyName("trait");
+                            jw.WriteValue(creature.Traits.FirstOrDefault()??"");
 
                             jw.WriteEnd();
                         }
 
                         jw.WriteEndArray();
+                        jw.WriteEndObject();
                     }
 
                 }
@@ -317,7 +513,7 @@ namespace ASVPack.Models
 
             string exportFolder = Path.GetDirectoryName(exportFilename) ?? "";
             if (!Directory.Exists(exportFolder)) Directory.CreateDirectory(exportFolder);
-
+            if (File.Exists(exportFilename)) File.Delete(exportFilename);
 
             using (FileStream fs = File.Create(exportFilename))
             {
@@ -325,6 +521,16 @@ namespace ASVPack.Models
                 {
                     using (JsonTextWriter jw = new JsonTextWriter(sw))
                     {
+
+                        jw.WriteStartObject();
+                        jw.WritePropertyName("map");
+                        jw.WriteValue(MapFilename);
+                        jw.WritePropertyName("day");
+                        jw.WriteValue(MapDay);
+                        jw.WritePropertyName("time");
+                        jw.WriteValue(MapTime.ToString("HH:mm"));
+                        jw.WritePropertyName("data");
+
                         var allTames = Tribes.SelectMany(t => t.Tames).ToList();
 
                         //var creatureList = shouldSort ? gd.TamedCreatures.OrderBy(o => o.ClassName).Cast<ArkTamedCreature>() : gd.TamedCreatures;
@@ -401,6 +607,34 @@ namespace ASVPack.Models
                             jw.WritePropertyName("craft-w");
                             jw.WriteValue(creature.BaseStats[11]);
 
+                            if(creature.TamedMutations!=null && creature.TamedMutations?.LongCount() > 0)
+                            {
+                                jw.WritePropertyName("hp-m");
+                                jw.WriteValue(creature.TamedMutations[0]);
+
+                                jw.WritePropertyName("stam-m");
+                                jw.WriteValue(creature.TamedMutations[1]);
+
+                                jw.WritePropertyName("melee-m");
+                                jw.WriteValue(creature.TamedMutations[8]);
+
+                                jw.WritePropertyName("weight-m");
+                                jw.WriteValue(creature.TamedMutations[7]);
+
+                                jw.WritePropertyName("speed-m");
+                                jw.WriteValue(creature.TamedMutations[9]);
+
+                                jw.WritePropertyName("food-m");
+                                jw.WriteValue(creature.TamedMutations[4]);
+
+                                jw.WritePropertyName("oxy-m");
+                                jw.WriteValue(creature.TamedMutations[3]);
+
+                                jw.WritePropertyName("craft-m");
+                                jw.WriteValue(creature.TamedMutations[11]);
+                            }                          
+
+
                             jw.WritePropertyName("hp-t");
                             jw.WriteValue(creature.TamedStats[0]);
 
@@ -470,11 +704,35 @@ namespace ASVPack.Models
                             jw.WritePropertyName("isClone");
                             jw.WriteValue(creature.IsClone);
 
+                            jw.WritePropertyName("tamedServer");
+                            jw.WriteValue(creature.TamedOnServerName);
+
+
+                            jw.WritePropertyName("uploadedServer");
+                            jw.WriteValue(creature.UploadedServerName??"");
+
+                            jw.WritePropertyName("maturation");
+                            jw.WriteValue(creature.Maturation.ToString());
+
                             if (creature.UploadedTimeInGame != 0)
                             {
                                 jw.WritePropertyName("uploadedTime");
                                 jw.WriteValue(creature.UploadedTime);
                             }
+
+                            jw.WritePropertyName("traits");
+                            jw.WriteStartArray();
+                            if (creature.Traits.Count > 0)
+                            {
+                                foreach(var traitClass in creature.Traits)
+                                {
+                                    jw.WriteStartObject();
+                                    jw.WritePropertyName("trait");
+                                    jw.WriteValue(traitClass);
+                                    jw.WriteEndObject();
+                                }
+                            }
+                            jw.WriteEndArray();
 
                             bool exportInventories = true;
 
@@ -515,6 +773,7 @@ namespace ASVPack.Models
                         }
 
                         jw.WriteEndArray();
+                        jw.WriteEndObject();
                     }
 
                 }
@@ -526,7 +785,7 @@ namespace ASVPack.Models
         {
             string exportFolder = Path.GetDirectoryName(exportFilename)??"";
             if (!Directory.Exists(exportFolder)) Directory.CreateDirectory(exportFolder);
-
+            if (File.Exists(exportFilename)) File.Delete(exportFilename);
 
             using (FileStream fs = File.Create(exportFilename))
             {
@@ -534,6 +793,15 @@ namespace ASVPack.Models
                 {
                     using (JsonTextWriter jw = new JsonTextWriter(sw))
                     {
+                        jw.WriteStartObject();
+                        jw.WritePropertyName("map");
+                        jw.WriteValue(MapFilename);
+                        jw.WritePropertyName("day");
+                        jw.WriteValue(MapDay);
+                        jw.WritePropertyName("time");
+                        jw.WriteValue(MapTime.ToString("HH:mm"));
+                        jw.WritePropertyName("data");
+
                         jw.WriteStartArray();
 
                         foreach (var mapStructure in TerminalMarkers)
@@ -1274,6 +1542,7 @@ namespace ASVPack.Models
                         }
 
                         jw.WriteEndArray();
+                        jw.WriteEndObject();
                     }
 
                 }
@@ -1286,7 +1555,7 @@ namespace ASVPack.Models
         {
             string exportFolder = Path.GetDirectoryName(exportFilename)??"";
             if (!Directory.Exists(exportFolder)) Directory.CreateDirectory(exportFolder);
-
+            if (File.Exists(exportFilename)) File.Delete(exportFilename);
 
             using (FileStream fs = File.Create(exportFilename))
             {
@@ -1294,6 +1563,15 @@ namespace ASVPack.Models
                 {
                     using (JsonTextWriter jw = new JsonTextWriter(sw))
                     {
+                        jw.WriteStartObject();
+                        jw.WritePropertyName("map");
+                        jw.WriteValue(MapFilename);
+                        jw.WritePropertyName("day");
+                        jw.WriteValue(MapDay);
+                        jw.WritePropertyName("time");
+                        jw.WriteValue(MapTime.ToString("HH:mm"));
+                        jw.WritePropertyName("data");
+
                         jw.WriteStartArray();
 
                         foreach (var tribe in Tribes)
@@ -1327,6 +1605,41 @@ namespace ASVPack.Models
                                 {
                                     jw.WritePropertyName("isSwitchedOn");
                                     jw.WriteValue(structure.IsSwitchedOn.Value);
+                                }
+
+                                if (structure.Inclusions!=null && structure.Inclusions.Count > 0)
+                                {
+                                    jw.WritePropertyName("includeList");
+                                    jw.WriteStartArray();
+                                    foreach(var dinoClass in structure.Inclusions)
+                                    {
+                                        jw.WriteStartObject();
+
+                                        jw.WritePropertyName("className");
+                                        jw.WriteValue(dinoClass);
+
+                                        jw.WriteEndObject();
+
+                                    }
+                                    jw.WriteEndArray();
+
+                                }
+                                if (structure.Exclusions != null && structure.Exclusions.Count > 0)
+                                {
+                                    jw.WritePropertyName("excludeList");
+                                    jw.WriteStartArray();
+                                    foreach (var dinoClass in structure.Exclusions)
+                                    {
+                                        jw.WriteStartObject();
+
+                                        jw.WritePropertyName("className");
+                                        jw.WriteValue(dinoClass);
+
+                                        jw.WriteEndObject();
+
+                                    }
+                                    jw.WriteEndArray();
+
                                 }
 
                                 jw.WritePropertyName("lat");
@@ -1380,6 +1693,7 @@ namespace ASVPack.Models
                         }
 
                         jw.WriteEndArray();
+                        jw.WriteEndObject();
                     }
 
                 }
@@ -1392,7 +1706,7 @@ namespace ASVPack.Models
         {
             string exportFolder = Path.GetDirectoryName(exportFilename)??"";
             if (!Directory.Exists(exportFolder)) Directory.CreateDirectory(exportFolder);
-
+            if (File.Exists(exportFilename)) File.Delete(exportFilename);
 
             using (FileStream fs = File.Create(exportFilename))
             {
@@ -1400,6 +1714,15 @@ namespace ASVPack.Models
                 {
                     using (JsonTextWriter jw = new JsonTextWriter(sw))
                     {
+                        jw.WriteStartObject();
+                        jw.WritePropertyName("map");
+                        jw.WriteValue(MapFilename);
+                        jw.WritePropertyName("day");
+                        jw.WriteValue(MapDay);
+                        jw.WritePropertyName("time");
+                        jw.WriteValue(MapTime.ToString("HH:mm"));
+                        jw.WritePropertyName("data");
+
                         jw.WriteStartArray();
 
                         foreach (var playerTribe in Tribes)
@@ -1430,6 +1753,7 @@ namespace ASVPack.Models
                         }
 
                         jw.WriteEndArray();
+                        jw.WriteEndObject();
                     }
 
                 }
@@ -1441,12 +1765,23 @@ namespace ASVPack.Models
 
         public void ExportJsonPlayerTribes(string exportFilename)
         {
+            string filePath = Path.GetDirectoryName(exportFilename) ?? "";
+            if (!Directory.Exists(filePath)) Directory.CreateDirectory(filePath);
             if (File.Exists(exportFilename)) File.Delete(exportFilename);
 
             using (StreamWriter sw = new StreamWriter(exportFilename))
             {
                 using (JsonTextWriter jw = new JsonTextWriter(sw))
                 {
+
+                    jw.WriteStartObject();
+                    jw.WritePropertyName("map");
+                    jw.WriteValue(MapFilename);
+                    jw.WritePropertyName("day");
+                    jw.WriteValue(MapDay);
+                    jw.WritePropertyName("time");
+                    jw.WriteValue(MapTime.ToString("HH:mm"));
+                    jw.WritePropertyName("data");
                     jw.WriteStartArray();
 
                     foreach (var playerTribe in Tribes)
@@ -1515,23 +1850,35 @@ namespace ASVPack.Models
                     }
 
                     jw.WriteEndArray();
+                    jw.WriteEndObject();
                 }
 
             }
 
         }
 
+    
+
         public void ExportJsonPlayers(string exportFilename)
         {
             string exportFolder = Path.GetDirectoryName(exportFilename)??"";
             if (!Directory.Exists(exportFolder)) Directory.CreateDirectory(exportFolder);
-
+            if (File.Exists(exportFilename)) File.Delete(exportFilename);
             using (FileStream fs = File.Create(exportFilename))
             {
                 using (StreamWriter sw = new StreamWriter(fs))
                 {
                     using (JsonTextWriter jw = new JsonTextWriter(sw))
                     {
+                        jw.WriteStartObject();
+                        jw.WritePropertyName("map");
+                        jw.WriteValue(MapFilename);
+                        jw.WritePropertyName("day");
+                        jw.WriteValue(MapDay);
+                        jw.WritePropertyName("time");
+                        jw.WriteValue(MapTime.ToString("HH:mm"));
+                        jw.WritePropertyName("data");
+
                         jw.WriteStartArray();
 
                         foreach (var tribe in Tribes)
@@ -1623,6 +1970,22 @@ namespace ASVPack.Models
                                 jw.WritePropertyName("dataFile");
                                 jw.WriteValue(player.PlayerFilename);
 
+
+                                jw.WritePropertyName("netAddress");
+                                jw.WriteValue(player.LastNetAddress??"");
+
+
+                                jw.WritePropertyName("achievements");
+                                jw.WriteStartArray();
+                                foreach(var achievement in player.Achievments)
+                                {
+                                    jw.WriteStartObject();
+                                    jw.WritePropertyName("achievement");
+                                    jw.WriteValue($"{achievement.Description.Replace("Defeated ", "")} {achievement.Level}");
+                                    jw.WriteEndObject();
+                                }
+                                jw.WriteEndArray();
+
                                 bool exportInventories = true;
 
                                 if (exportInventories)
@@ -1672,6 +2035,7 @@ namespace ASVPack.Models
                         }
 
                         jw.WriteEndArray();
+                        jw.WriteEndObject();
                     }
 
                 }
@@ -1679,30 +2043,12 @@ namespace ASVPack.Models
             }
         }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         public void ExportPack(string fileName)
         {
 
             string filePath = Path.GetDirectoryName(fileName)??"";
             if (!Directory.Exists(filePath)) Directory.CreateDirectory(filePath);
-
+            if (File.Exists(fileName)) File.Delete(fileName);
 
             try
             {
@@ -1730,6 +2076,9 @@ namespace ASVPack.Models
             LoadedFilename = container.LoadedFilename;
             MapFilename = container.MapName;
             ContentDate = container.GameSaveTime;
+            MapDay = container.MapDay;
+            MapTime = container.MapTime;
+
             if (IncludeGameStructures)
             {
 
@@ -1741,7 +2090,9 @@ namespace ASVPack.Models
                     {
                         loadedStructures.Add(new ContentStructure()
                         {
+
                             ClassName = "ASV_Terminal",
+                            DisplayName = terminal.ClassName,
                             Latitude = terminal.Latitude.GetValueOrDefault(0),
                             Longitude = terminal.Longitude.GetValueOrDefault(0),
                             X = terminal.X,

@@ -24,7 +24,7 @@ namespace ASVPack.Extensions
             {
                 if (prop.Position == index && prop.Name == name)
                 {
-                    return prop.Value;
+                    return (T)prop.Value ;
                 }
             }
 
@@ -37,7 +37,7 @@ namespace ASVPack.Extensions
             {
                 if (prop.Position == index && prop.Name == name)
                 {
-                    return prop.Value;
+                    return (T)prop.Value;
                 }
             }
 
@@ -78,7 +78,8 @@ namespace ASVPack.Extensions
 
         public static bool IsCreature(this AsaGameObject gameObject)
         {
-            return gameObject.HasAnyProperty("bServerInitializedDino")
+            var isCreature = 
+            gameObject.HasAnyProperty("bServerInitializedDino") 
             & !(
                 gameObject.ClassString == "MotorRaft_BP_C"
                 || gameObject.ClassString == "Raft_BP_C"
@@ -89,19 +90,21 @@ namespace ASVPack.Extensions
                 || gameObject.ClassString == "SRaft_BP_C"
                 );
 
+
+            return isCreature;
         }
 
 
 
         public static bool IsWild(this AsaGameObject gameObject)
         {
-            var targetingTeam = gameObject.GetPropertyValue<int>("TargetingTeam");
+            var targetingTeam = gameObject.GetPropertyValue<int>("TargetingTeam",0,0);
             return (targetingTeam < PLAYER_START && gameObject.IsCreature());
         }
 
         public static bool IsTamed(this AsaGameObject gameObject)
         {
-            var targetingTeam = gameObject.GetPropertyValue<int>("TargetingTeam");
+            var targetingTeam = gameObject.GetPropertyValue<int>("TargetingTeam",0,0);
             return (targetingTeam >= PLAYER_START && gameObject.IsCreature());
         }
 
@@ -161,12 +164,38 @@ namespace ASVPack.Extensions
 
         public static long GetDinoId(this AsaGameObject gameObject)
         {
-            return CreateDinoId((int)gameObject.GetPropertyValue<uint>("DinoID1"), (int)gameObject.GetPropertyValue<uint>("DinoID2")) ;
+
+            int dinoId1 = (int)gameObject.GetPropertyValue<uint>("DinoID1", 0, 0);
+            int dinoId2 = (int)gameObject.GetPropertyValue<uint>("DinoID2", 0, 0);
+            string newDinoId = string.Concat(dinoId1, dinoId2);
+            long.TryParse(newDinoId, out long dinoId);
+
+            return dinoId;
+        }
+
+        public static long GetItemId(this AsaGameObject gameObject)
+        {
+
+            List<dynamic> itemIdStruct = gameObject.GetPropertyValue<List<dynamic>>("ItemID", 0, null);
+            if (itemIdStruct == null) return 0;
+
+
+            int itemId1 = (int)itemIdStruct.OfType<AsaProperty<dynamic>>().First(p => p.Name == "ItemID1").Value; 
+            int itemId2 = (int)itemIdStruct.OfType<AsaProperty<dynamic>>().First(p => p.Name == "ItemID2").Value; ;
+            string newItemId = string.Concat(itemId1, itemId2);
+            long.TryParse(newItemId, out long itemId);
+
+            return itemId;
         }
 
         public static long CreateDinoId(int id1, int id2)
         {
-            return (long)id1 << 32 | (id2 & 0xFFFFFFFFL);
+            string newDinoId = string.Concat(id1, id2);
+            long.TryParse(newDinoId, out long dinoId);
+
+            return dinoId;
+
+            //return (long)id1 << 32 | (id2 & 0xFFFFFFFFL);
         }
         public static ContentTribe AsTribe(this AsaObject tribeObject)
         {

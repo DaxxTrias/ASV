@@ -93,7 +93,7 @@ namespace ARKViewer
             {
                 //var playerItems = selectedPlayer.Creatures;
                 ConcurrentBag<ListViewItem> listItems = new ConcurrentBag<ListViewItem>();
-                
+
                 var inventItems = loadedInventory.GroupBy(g => new
                 {
                     g.ClassName,
@@ -102,6 +102,7 @@ namespace ARKViewer
                     g.CustomName,
                     g.IsBlueprint,
                     g.IsEngram,
+                    g.IsInput,
                     g.Rating
                 }).Select(s => new ContentItem
                 {
@@ -112,6 +113,7 @@ namespace ARKViewer
                     IsBlueprint = s.Key.IsBlueprint,
                     IsEngram = s.Key.IsEngram,
                     Rating = s.Key.Rating,
+                    IsInput = s.Key.IsInput,
                     Quantity = s.Sum(i => i.Quantity)
                 }).ToList();
 
@@ -135,8 +137,8 @@ namespace ARKViewer
                     if (itemName.ToLower().Contains(txtFilter.Text.ToLower()) || categoryName.ToLower().Contains(txtFilter.Text.ToLower()))
                     {
                         string qualityName = "";
-                        Color backColor = SystemColors.Window;
-                        Color foreColor = SystemColors.WindowText;
+                        Color backColor = lvwInventory.BackColor;
+                        Color foreColor = lvwInventory.ForeColor;
                         if (invItem.Rating.HasValue)
                         {
                             var itemQuality = Program.GetQualityByRating(invItem.Rating.Value);
@@ -150,6 +152,8 @@ namespace ARKViewer
                             ListViewItem newItem = new ListViewItem(itemName);
                             newItem.BackColor = backColor;
                             newItem.ForeColor = foreColor;
+
+                            newItem.SubItems.Add(invItem.IsInput ? "Yes" : "No");
                             newItem.SubItems.Add(categoryName);
                             newItem.SubItems.Add(qualityName);
                             newItem.SubItems.Add(invItem.Rating.HasValue ? invItem.Rating.ToString() : "");

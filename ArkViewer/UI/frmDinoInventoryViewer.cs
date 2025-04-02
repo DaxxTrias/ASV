@@ -99,10 +99,20 @@ namespace ARKViewer
             lblLevel.Text = tame.Level.ToString();
             lblTribeName.Text = tame.TribeName;
 
+            if (tame.Traits != null)
+            {
+                foreach (var t in tame.Traits)
+                {
+                    lvwTraits.Items.Add(t);
+                }
+            }
+            lvwTraits.Sort();
 
             PopulateCreatureInventory();
 
         }
+
+
 
         private void PopulateCreatureInventory()
         {
@@ -118,6 +128,7 @@ namespace ARKViewer
                     g.CustomName,
                     g.IsBlueprint,
                     g.IsEngram,
+                    g.IsInput,
                     g.Rating
                 }).Select(s => new ContentItem
                 {
@@ -128,6 +139,7 @@ namespace ARKViewer
                     IsBlueprint = s.Key.IsBlueprint,
                     IsEngram = s.Key.IsEngram,
                     Rating = s.Key.Rating,
+                    IsInput = s.Key.IsInput,
                     Quantity = s.Sum(i => i.Quantity)
                 }).ToList();
 
@@ -147,15 +159,14 @@ namespace ARKViewer
 
                     }
 
-
                     if (itemName.ToLower().Contains(txtCreatureFilter.Text.ToLower()) || categoryName.ToLower().Contains(txtCreatureFilter.Text.ToLower()))
                     {
                         if (!invItem.IsEngram)
                         {
 
                             string qualityName = "";
-                            Color backColor = SystemColors.Window;
-                            Color foreColor = SystemColors.WindowText;
+                            Color backColor = lvwCreatureInventory.BackColor;
+                            Color foreColor = lvwCreatureInventory.ForeColor;
                             if (invItem.Rating.HasValue)
                             {
                                 var itemQuality = Program.GetQualityByRating(invItem.Rating.Value);
@@ -167,6 +178,7 @@ namespace ARKViewer
                             ListViewItem newItem = new ListViewItem(itemName);
                             newItem.BackColor = backColor;
                             newItem.ForeColor = foreColor;
+                            newItem.SubItems.Add(invItem.IsInput ? "Yes" : "No");
                             newItem.SubItems.Add(invItem.IsBlueprint ? "Yes" : "No");
                             newItem.SubItems.Add(categoryName);
                             newItem.SubItems.Add(qualityName);

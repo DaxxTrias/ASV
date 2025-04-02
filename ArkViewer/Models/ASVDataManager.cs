@@ -14,20 +14,22 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using static System.Windows.Forms.DataFormats;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement.ListView;
 
 namespace ARKViewer.Models
 {
     public class ASVDataManager
     {
-
+        readonly float poiMarkerSize = 32f;
+        readonly float poiIconSize = 26f;
 
         //cached image params
         ASVStructureOptions cachedOptions = new ASVStructureOptions();
         string lastRealm = string.Empty;
         Tuple<long, bool, bool, bool> cacheImageTribes = null;
         Tuple<string, string, int, int, float, float, float> cacheImageWild = null;
-        Tuple<string, string, bool, long, long> cacheImageTamed = null;
+        Tuple<string, string, int, long, long> cacheImageTamed = null;
         Tuple<long, string> cacheImageDroppedItems = null;
         Tuple<long> cacheImageDropBags = null;
         Tuple<string, long, long> cacheImagePlayerStructures = null;
@@ -42,7 +44,12 @@ namespace ARKViewer.Models
 
         ContentPack pack = null;
         public ContentMap LoadedMap { get; internal set; } = null;
-        
+
+
+        public float MarkerSize { get; set; } = 10;
+
+        public int MapDay => pack == null ? 0 : pack.MapDay;
+        public DateTime MapTime => pack == null ? DateTime.Now.Date : pack.MapTime;
 
         public DateTime? ContentDate
         {
@@ -73,7 +80,7 @@ namespace ARKViewer.Models
             }
         }
 
-        public string Realm { get; set; } = "";
+        private string imageRealmName { get; set; } = "";
         
 
 
@@ -88,12 +95,12 @@ namespace ARKViewer.Models
 
 
 
-                if(Realm!=null && Realm.Length > 0)
+                if(imageRealmName!=null && imageRealmName.Length > 0)
                 {
-                    var selectedRealm = LoadedMap.Regions.FirstOrDefault(r => r.RegionName == Realm);
-                    if (selectedRealm != null)
+                    var selectedRealmData = LoadedMap.Regions.FirstOrDefault(r => r.RegionName == imageRealmName);
+                    if (selectedRealmData != null)
                     {
-                        var realmImage = selectedRealm.ImageFile ?? "";
+                        var realmImage = selectedRealmData.ImageFile ?? "";
                         if(realmImage.Length > 0)
                         {
                             var realmFilePath = Path.Combine(imageFilePath, "Maps\\", realmImage);
@@ -156,6 +163,7 @@ namespace ARKViewer.Models
         public ASVDataManager(ContentPack data)
         {
             pack = data;
+            LoadedMap = new ContentMapPack().GetMap($"{pack.MapFilename}.ark");
         }
 
         ~ASVDataManager()
@@ -169,7 +177,7 @@ namespace ARKViewer.Models
         {
             if (pack.WildCreatures == null) return new List<ContentWildCreature>();
 
-            Realm = selectedRealm;
+            imageRealmName = selectedRealm;
 
             var wilds = pack.WildCreatures.Where(w =>
                                             ((w.ClassName == selectedClass || selectedClass == "") && ((w.BaseLevel >= minLevel && w.BaseLevel <= maxLevel) || w.BaseLevel == 0))
@@ -198,18 +206,15 @@ namespace ARKViewer.Models
                     );
 
                 }
-
             }
-
-
             return wilds;
         }
 
-        public List<ContentTamedCreature> GetTamedCreatures(string selectedClass, long selectedTribeId, long selectedPlayerId, bool includeCryoVivarium, string selectedRealm)
+        public List<ContentTamedCreature> GetTamedCreatures(string selectedClass, long selectedTribeId, long selectedPlayerId, int filterType, string selectedRealm, float fromLat = 50, float fromLon = 50, float fromRadius = 100)
         {
             if (pack.Tribes == null) return new List<ContentTamedCreature>();
 
-            Realm = selectedRealm;
+            imageRealmName = selectedRealm;
 
             var tamed = pack.Tribes
                 .Where(t => (t.TribeId == selectedTribeId || selectedTribeId == 0) || t.Players.Any(p => p.Id == selectedPlayerId && selectedPlayerId != 0))
@@ -217,10 +222,29 @@ namespace ARKViewer.Models
                                 c.Tames.Where(w =>
                                     (w.ClassName == selectedClass || selectedClass == "")
                                     & !(w.ClassName == "MotorRaft_BP_C" || w.ClassName == "Raft_BP_C")
-                                    && (includeCryoVivarium || w.IsCryo == false)
-                                    && (includeCryoVivarium || w.IsVivarium == false)
+                                    &&
+                                    (
+                                        (Math.Abs(w.Latitude.GetValueOrDefault(0) - fromLat) <= fromRadius)
+                                        && (Math.Abs(w.Longitude.GetValueOrDefault(0) - fromLon) <= fromRadius)
+                                    )
                                 )
                             ).ToList();
+
+            switch (filterType)
+            {
+                case 1:
+                    //normal
+                    tamed.RemoveAll(t => t.IsVivarium || t.IsCryo || t.UploadedTime.HasValue);
+                    break;
+                case 2:
+                    //stored
+                    tamed.RemoveAll(t => !(t.IsCryo || t.IsVivarium));
+                    break;
+                case 3:
+                    //uploaded
+                    tamed.RemoveAll(t => !t.UploadedTime.HasValue);
+                    break;
+            }
 
             if (!string.IsNullOrEmpty(selectedRealm))
             {
@@ -250,7 +274,7 @@ namespace ARKViewer.Models
             if (pack.Tribes == null) return null;
             return pack.Tribes
                 .SelectMany(c =>
-                                c.Tames.Where(w => (long)w.Id == tameId)
+                                c.Tames.Where(w => (long)w.Id == tameId || w.DinoId == tameId.ToString())
                             ).ToList().FirstOrDefault();
         }
 
@@ -345,11 +369,11 @@ namespace ARKViewer.Models
 
         }
 
-        public List<ContentStructure> GetPlayerStructures(long selectedTribeId, long selectedPlayerId, string selectedClass, bool includeExcluded, string selectedRealm)
+        public List<ContentStructure> GetPlayerStructures(long selectedTribeId, long selectedPlayerId, string selectedClass, bool includeExcluded, string selectedRealm, float fromLat = 50, float fromLon=50, float fromRadius = 100)
         {
             if (pack.Tribes == null) return new List<ContentStructure>();
 
-            Realm = selectedRealm;
+            imageRealmName = selectedRealm;
 
             var tribeStructures = pack.Tribes
                 .Where(t =>
@@ -361,6 +385,12 @@ namespace ARKViewer.Models
                         (selectedClass.Length == 0 || x.ClassName == selectedClass)
                         &&
                         (!Program.ProgramConfig.StructureExclusions.Contains(x.ClassName) || includeExcluded)
+                        &&
+                        (
+                            (Math.Abs(x.Latitude.GetValueOrDefault(0) - fromLat) <= fromRadius)
+                            && (Math.Abs(x.Longitude.GetValueOrDefault(0) - fromLon) <= fromRadius)
+                        )
+
                     )
                 ).ToList();
 
@@ -403,7 +433,7 @@ namespace ARKViewer.Models
         {
             if (pack.Tribes == null) return new List<ContentPlayer>();
 
-            Realm = selectedRealm;
+            imageRealmName = selectedRealm;
 
             var tribePlayers = pack.Tribes
                 .Where(t =>
@@ -456,7 +486,7 @@ namespace ARKViewer.Models
         {
             if (pack.DroppedItems == null) return new List<ContentDroppedItem>();
 
-            Realm = selectedRealm;
+            imageRealmName = selectedRealm;
 
             var foundItems = pack.DroppedItems
                 .Where(d =>
@@ -489,11 +519,11 @@ namespace ARKViewer.Models
 
 
 
-        public List<ASVFoundItem> GetItems(long tribeId, string className, string selectedRealm)
+        public List<ASVFoundItem> GetItems(long tribeId, string className, string selectedRealm, string itemId = "")
         {
             List<ASVFoundItem> foundItems = new List<ASVFoundItem>();
 
-            Realm = selectedRealm;
+            imageRealmName = selectedRealm;
 
             //get selected tribe(s)
             var tribes = GetTribes(tribeId);
@@ -511,14 +541,13 @@ namespace ARKViewer.Models
                             .Select(s => new
                             {
                                 tribe.TribeName,
-                                Container = s.ClassName,
-                   
+                                Container = s.ClassName,                   
                                 s.Latitude,
                                 s.Longitude,
                                 s.X,
                                 s.Y,
                                 s.Z,
-                                MatchedItems = s.Inventory.Items.Where(i => i.ClassName == className || className == "").ToList()
+                                MatchedItems = s.Inventory.Items.Where(i => (i.ClassName == className || className == "") && ((itemId.Length > 0 && i.ItemId.ToString().Contains(itemId)) || itemId.Length==0)).ToList()
                             })
                             .ToList();
 
@@ -526,7 +555,7 @@ namespace ARKViewer.Models
                         {
                             foreach (var container in matchedContainers)
                             {
-                                var groupedItems = container.MatchedItems.GroupBy(x => new { ClassName = x.ClassName, IsBluePrint = x.IsBlueprint, x.Rating, x.UploadedTime, x.OwnerPlayerId, x.CraftedByPlayer}).Select(g => new { ClassName = g.Key.ClassName, IsBlueprint = g.Key.IsBluePrint, Rating = g.Key.Rating, OwnerPlayerId = g.Key.OwnerPlayerId, g.Key.CraftedByPlayer, UploadedTime =g.Key.UploadedTime, Qty = g.Sum(i => i.Quantity) }).ToList();
+                                var groupedItems = container.MatchedItems.GroupBy(x => new { ClassName = x.ClassName, IsBluePrint = x.IsBlueprint, x.Rating, x.UploadedTime, x.OwnerPlayerId, x.CraftedByPlayer, x.ItemId}).Select(g => new { ClassName = g.Key.ClassName, g.Key.ItemId, IsBlueprint = g.Key.IsBluePrint, Rating = g.Key.Rating, OwnerPlayerId = g.Key.OwnerPlayerId, g.Key.CraftedByPlayer, UploadedTime =g.Key.UploadedTime, Qty = g.Sum(i => i.Quantity) }).ToList();
 
                                 if (groupedItems != null && groupedItems.Count > 0)
                                 {
@@ -543,12 +572,14 @@ namespace ARKViewer.Models
                                             containerName = containerMap.FriendlyName;
                                         }
                                         
+
                                         foundItems.Add(new ASVFoundItem()
                                         {
                                             ContainerName = containerName,
                                             TribeId = tribe.TribeId,
                                             TribeName = tribe.TribeName,
                                             ClassName = g.ClassName,
+                                            ItemId = g.ItemId,
                                             DisplayName = displayName,
                                             PlayerId = g.OwnerPlayerId,
                                             PlayerName = tribe.Players.FirstOrDefault(p=>p.Id == g.OwnerPlayerId)?.Name,
@@ -561,6 +592,8 @@ namespace ARKViewer.Models
                                             IsBlueprint = g.IsBlueprint,
                                             Rating = g.Rating,
                                             UploadedTime = g.UploadedTime
+                                            
+                                    
 
                                         });
 
@@ -586,14 +619,14 @@ namespace ARKViewer.Models
                                 s.X,
                                 s.Y,
                                 s.Z,
-                                MatchedItems = s.Inventory.Items.Where(i => i.ClassName == className || className == "").ToList()
+                                MatchedItems = s.Inventory.Items.Where(i => (i.ClassName == className || className == "") && ((itemId.Length > 0 && i.ItemId.ToString().Contains(itemId)) || itemId.Length == 0)).ToList()
                             }).ToList();
 
                         if (matchedContainers != null && matchedContainers.Count > 0)
                         {
                             foreach (var container in matchedContainers)
                             {
-                                var groupedItems = container.MatchedItems.GroupBy(x => new { x.ClassName, x.IsBlueprint,  x.Rating } ).Select(g => new { ClassName = g.Key.ClassName, IsBlueprint = g.Key.IsBlueprint, Rating = g.Key.Rating, Qty = g.Sum(i => i.Quantity) }).ToList();
+                                var groupedItems = container.MatchedItems.GroupBy(x => new { x.ClassName, x.ItemId, x.IsBlueprint,  x.Rating } ).Select(g => new { ClassName = g.Key.ClassName, g.Key.ItemId,IsBlueprint = g.Key.IsBlueprint, Rating = g.Key.Rating, Qty = g.Sum(i => i.Quantity) }).ToList();
 
                                 if (groupedItems != null && groupedItems.Count > 0)
                                 {
@@ -609,6 +642,7 @@ namespace ARKViewer.Models
                                             ContainerName = container.Container,
                                             TribeId = tribe.TribeId,
                                             TribeName = tribe.TribeName,
+                                            ItemId = g.ItemId,
                                             ClassName = g.ClassName,
                                             DisplayName = displayName,
                                             Latitude = container.Latitude.GetValueOrDefault(0),
@@ -646,7 +680,7 @@ namespace ARKViewer.Models
                                 s.X,
                                 s.Y,
                                 s.Z,                                
-                                MatchedItems = s.Inventory.Items.Where(i => i.ClassName == className || className == "").ToList()
+                                MatchedItems = s.Inventory.Items.Where(i => (i.ClassName == className || className == "") && ((itemId.Length > 0 && i.ItemId.ToString().Contains(itemId)) || itemId.Length == 0)).ToList()
                             })
                             .ToList();
 
@@ -654,7 +688,7 @@ namespace ARKViewer.Models
                         {
                             foreach (var container in matchedContainers)
                             {
-                                var groupedItems = container.MatchedItems.GroupBy(x => new { x.ClassName, x.IsBlueprint, x.Rating, x.UploadedTime} ).Select(g => new { ClassName = g.Key.ClassName, IsBlueprint = g.Key.IsBlueprint, Rating = g.Key.Rating, UploadedTime = g.Key.UploadedTime, Qty = g.Sum(i => i.Quantity) }).ToList();
+                                var groupedItems = container.MatchedItems.GroupBy(x => new { x.ClassName, x.ItemId, x.IsBlueprint, x.Rating, x.UploadedTime} ).Select(g => new { ClassName = g.Key.ClassName, g.Key.ItemId, IsBlueprint = g.Key.IsBlueprint, Rating = g.Key.Rating, UploadedTime = g.Key.UploadedTime, Qty = g.Sum(i => i.Quantity) }).ToList();
 
                                 if (groupedItems != null && groupedItems.Count > 0)
                                 {
@@ -671,6 +705,7 @@ namespace ARKViewer.Models
                                             PlayerName = container.PlayerName,
                                             TribeId = tribe.TribeId,
                                             TribeName = tribe.TribeName,
+                                            ItemId = g.ItemId,
                                             ClassName = g.ClassName,
                                             DisplayName = displayName,
                                             Latitude = container.Latitude.GetValueOrDefault(0),
@@ -808,6 +843,7 @@ namespace ARKViewer.Models
             graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
 
+            imageRealmName = selectedRealm;
 
             if (
                 cachedOptions.Equals(mapOptions)
@@ -817,6 +853,7 @@ namespace ARKViewer.Models
                     && cacheImageItems.Item1 == tribeId
                     && cacheImageItems.Item2 == className
                     && lastDrawRequest == "items"
+                    && lastRealm == selectedRealm
                 )
             )
             {
@@ -828,7 +865,8 @@ namespace ARKViewer.Models
                 lastDrawRequest = "items";
                 cacheImageItems = new Tuple<long, string>(tribeId, className);
                 cachedOptions = mapOptions;
-
+                lastRealm = selectedRealm;
+                
                 graphics.DrawImage(MapImage, new Rectangle(0, 0, 1024, 1024));
                 graphics = AddMapStructures(graphics, mapOptions);
 
@@ -838,16 +876,15 @@ namespace ARKViewer.Models
                 {
                     var markerX = (float)(result.Longitude) * 1024 / 100;
                     var markerY = (float)(result.Latitude) * 1024 / 100;
-                    var markerSize = 10f;
-
+                    
                     if (float.IsInfinity(markerX) || float.IsInfinity(markerY)) continue;
                     Color markerColor = Color.AliceBlue;
 
-                    graphics.FillEllipse(new SolidBrush(markerColor), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                    graphics.FillEllipse(new SolidBrush(markerColor), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
 
                     Color borderColour = Color.Blue;
                     int borderSize = 1;
-                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
                 }
 
                 gameContentMap = (Image)bitmap;
@@ -879,6 +916,8 @@ namespace ARKViewer.Models
             graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
 
+            imageRealmName = selectedRealm;
+
             if (
                 cachedOptions.Equals(mapOptions)
                 && (cacheImageWild != null
@@ -902,6 +941,7 @@ namespace ARKViewer.Models
                 lastDrawRequest = "wild";
                 cacheImageWild = new Tuple<string, string, int, int, float, float, float>(className, productionClassName, minLevel, maxLevel, filterLat, filterLon, filterRadius);
                 lastRealm = selectedRealm;
+
                 cachedOptions = mapOptions;
 
                 graphics.DrawImage(MapImage, new Rectangle(0, 0, 1024, 1024));
@@ -913,12 +953,13 @@ namespace ARKViewer.Models
                 if (productionClassName.Length > 0) filteredWilds.RemoveAll(d => d.ProductionResources == null || !d.ProductionResources.Any(r => r == productionClassName));
 
 
+                int imageSize = 1024;
+
                 foreach (var wild in filteredWilds)
                 {
-                    var markerX = (float)(wild.Longitude.GetValueOrDefault(0)) * 1024 / 100;
-                    var markerY = (float)(wild.Latitude.GetValueOrDefault(0)) * 1024 / 100;
-                    var markerSize = 10f;
-
+                    var markerX = (float)(wild.Longitude.GetValueOrDefault(0)) * imageSize / 100;
+                    var markerY = (float)(wild.Latitude.GetValueOrDefault(0)) * imageSize / 100;
+                    
                     if (float.IsInfinity(markerX) || float.IsInfinity(markerY)) continue;
 
                     Color markerColor = Color.WhiteSmoke;
@@ -940,11 +981,11 @@ namespace ARKViewer.Models
 
                     }
 
-                    graphics.FillEllipse(new SolidBrush(markerColor), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                    graphics.FillEllipse(new SolidBrush(markerColor), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
 
                     Color borderColour = Color.Blue;
                     int borderSize = 1;
-                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
                 }
 
                 gameContentMap = (Image)bitmap;
@@ -969,19 +1010,20 @@ namespace ARKViewer.Models
         }
 
 
-        public Bitmap GetMapImageTamed(string className, string productionClassName, bool includeStored, long tribeId, long playerId, List<Tuple<float, float>> selectedLocations, ASVStructureOptions mapOptions, List<ContentMarker> customMarkers, string selectedRealm)
+        public Bitmap GetMapImageTamed(string className, string productionClassName, int filterType, long tribeId, long playerId, List<Tuple<float, float>> selectedLocations, ASVStructureOptions mapOptions, List<ContentMarker> customMarkers, string selectedRealm, float fromLat = 50, float fromLon = 50, float fromRadius = 100)
         {
             Bitmap bitmap = new Bitmap(1024, 1024);
             Graphics graphics = Graphics.FromImage(bitmap);
             graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
 
+            imageRealmName = selectedRealm;
 
             if (cachedOptions.Equals(mapOptions) 
                 && (cacheImageTamed != null
                 && cacheImageTamed.Item1 == className
                 && cacheImageTamed.Item2 == productionClassName
-                && cacheImageTamed.Item3 == includeStored
+                && cacheImageTamed.Item3 == filterType
                 && cacheImageTamed.Item4 == tribeId
                 && cacheImageTamed.Item5 == playerId
                 && lastRealm == selectedRealm
@@ -995,14 +1037,15 @@ namespace ARKViewer.Models
             {
                 lastDrawRequest = "tamed";
                 lastRealm = selectedRealm;
-                cacheImageTamed = new Tuple<string, string, bool, long, long>(className, productionClassName, includeStored, tribeId, playerId);
+
+                cacheImageTamed = new Tuple<string, string, int, long, long>(className, productionClassName, filterType, tribeId, playerId);
                 cachedOptions = mapOptions;
 
                 graphics.DrawImage(MapImage, new Rectangle(0, 0, 1024, 1024));
                 graphics = AddMapStructures(graphics, mapOptions);
 
 
-                var filteredTames = GetTamedCreatures(className, tribeId, playerId, includeStored, selectedRealm);
+                var filteredTames = GetTamedCreatures(className, tribeId, playerId, filterType, selectedRealm, fromLat,fromLon,fromRadius);
                 //remove any not matching productionClass
                 if (productionClassName.Length > 0) filteredTames.RemoveAll(d => d.ProductionResources == null || !d.ProductionResources.Any(r => r == productionClassName));
 
@@ -1014,8 +1057,7 @@ namespace ARKViewer.Models
 
                     if (Single.TryParse(markerXFloat.ToString(),out Single markerX) == false || Single.TryParse(markerYFloat.ToString(), out Single markerY) == false) continue; //Draw methods limited to single values
 
-                    var markerSize = 10f;
-
+                    
                     Color markerColor = Color.WhiteSmoke;
                     if (LoadedMap.Regions != null && LoadedMap.Regions.Count > 0)
                     {
@@ -1035,11 +1077,11 @@ namespace ARKViewer.Models
 
                     }
 
-                    graphics.FillEllipse(new SolidBrush(markerColor), markerX - (markerSize / 2), markerY - (markerSize / 2), markerSize, markerSize);
+                    graphics.FillEllipse(new SolidBrush(markerColor), markerX - (MarkerSize / 2), markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
 
                     Color borderColour = Color.Blue;
                     int borderSize = 1;
-                    graphics.DrawEllipse(new Pen(borderColour, borderSize), markerX - (markerSize / 2), markerY - (markerSize / 2), markerSize, markerSize);
+                    graphics.DrawEllipse(new Pen(borderColour, borderSize), markerX - (MarkerSize / 2), markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
                 }
 
                 gameContentMap = (Image)bitmap;
@@ -1070,6 +1112,7 @@ namespace ARKViewer.Models
             graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
 
+            imageRealmName = selectedRealm;
 
             if (cachedOptions.Equals(mapOptions)
                 &&(cacheImageDroppedItems != null
@@ -1087,6 +1130,7 @@ namespace ARKViewer.Models
             {
                 lastDrawRequest = "droppeditems";
                 lastRealm = selectedRealm;
+
                 cacheImageDroppedItems = new Tuple<long, string>(droppedPlayerId, droppedClass);
                 cachedOptions = mapOptions;
 
@@ -1094,7 +1138,7 @@ namespace ARKViewer.Models
                 graphics = AddMapStructures(graphics, mapOptions);
 
                 var filteredDrops = GetDroppedItems(droppedPlayerId, droppedClass, selectedRealm);
-                float markerSize = 10f;
+                
                 foreach (var item in filteredDrops)
                 {
 
@@ -1124,11 +1168,11 @@ namespace ARKViewer.Models
                         }
 
                     }
-                    graphics.FillEllipse(new SolidBrush(markerColor), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                    graphics.FillEllipse(new SolidBrush(markerColor), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
 
                     Color borderColour = Color.Blue;
                     int borderSize = 1;
-                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
                 }
 
                 gameContentMap = (Image)bitmap;
@@ -1153,18 +1197,20 @@ namespace ARKViewer.Models
 
         }
 
-        public Bitmap GetMapImageDropBags(long droppedPlayerId, List<Tuple<float, float>> selectedLocations, ASVStructureOptions mapOptions, List<ContentMarker> customMarkers)
+        public Bitmap GetMapImageDropBags(long droppedPlayerId, List<Tuple<float, float>> selectedLocations, ASVStructureOptions mapOptions, List<ContentMarker> customMarkers, string selectedRealm)
         {
             Bitmap bitmap = new Bitmap(1024, 1024);
             Graphics graphics = Graphics.FromImage(bitmap);
             graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
 
+            imageRealmName = selectedRealm;
 
             if (cachedOptions.Equals(mapOptions)
                 && (cacheImageDropBags != null
                 && droppedPlayerId == cacheImageDropBags.Item1
                 && lastDrawRequest == "dropbags")
+                && lastRealm == selectedRealm
             )
             {
                 //if all match, return cached content image
@@ -1173,6 +1219,9 @@ namespace ARKViewer.Models
             else
             {
                 lastDrawRequest = "dropbags";
+                lastRealm = selectedRealm;
+
+
                 cacheImageDropBags = new Tuple<long>(droppedPlayerId);
                 cachedOptions = mapOptions;
 
@@ -1181,7 +1230,7 @@ namespace ARKViewer.Models
 
 
                 var filteredDrops = GetDeathCacheBags(droppedPlayerId);
-                float markerSize = 10f;
+                
                 foreach (var item in filteredDrops)
                 {
 
@@ -1211,11 +1260,11 @@ namespace ARKViewer.Models
                         }
 
                     }
-                    graphics.FillEllipse(new SolidBrush(markerColor), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                    graphics.FillEllipse(new SolidBrush(markerColor), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
 
                     Color borderColour = Color.Blue;
                     int borderSize = 1;
-                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
                 }
 
                 gameContentMap = (Image)bitmap;
@@ -1237,13 +1286,14 @@ namespace ARKViewer.Models
             return bitmap;
         }
 
-        public Bitmap GetMapImagePlayerStructures(string className, long tribeId, long playerId, List<Tuple<float, float>> selectedLocations, ASVStructureOptions mapOptions, List<ContentMarker> customMarkers, string selectedRealm)
+        public Bitmap GetMapImagePlayerStructures(string className, long tribeId, long playerId, List<Tuple<float, float>> selectedLocations, ASVStructureOptions mapOptions, List<ContentMarker> customMarkers, string selectedRealm, float fromLat = 50, float fromLon = 50, float fromRadius = 100)
         {
             Bitmap bitmap = new Bitmap(1024, 1024);
             Graphics graphics = Graphics.FromImage(bitmap);
             graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
 
+            imageRealmName = selectedRealm;
 
             if (cachedOptions.Equals(mapOptions)
                 && (cacheImagePlayerStructures != null
@@ -1261,19 +1311,19 @@ namespace ARKViewer.Models
             {
                 lastDrawRequest = "structures";
                 lastRealm = selectedRealm;
+
                 cacheImagePlayerStructures = new Tuple<string, long, long>(className, tribeId, playerId);
                 cachedOptions = mapOptions;
 
                 graphics.DrawImage(MapImage, new Rectangle(0, 0, 1024, 1024));
                 graphics = AddMapStructures(graphics, mapOptions);
 
-                var filteredStructures = GetPlayerStructures(tribeId, playerId, className, false, selectedRealm);
+                var filteredStructures = GetPlayerStructures(tribeId, playerId, className, false, selectedRealm, fromLat,fromLon,fromRadius);
                 foreach (var playerStructure in filteredStructures)
                 {
                     var markerX = (float)(playerStructure.Longitude.GetValueOrDefault(0)) * 1024 / 100;
                     var markerY = (float)(playerStructure.Latitude.GetValueOrDefault(0)) * 1024 / 100;
-                    var markerSize = 10f;
-
+                    
                     if (float.IsInfinity(markerX) || float.IsInfinity(markerY)) continue;
 
                     Color markerColor = Color.WhiteSmoke;
@@ -1294,11 +1344,11 @@ namespace ARKViewer.Models
                         }
 
                     }
-                    graphics.FillEllipse(new SolidBrush(markerColor), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                    graphics.FillEllipse(new SolidBrush(markerColor), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
 
                     Color borderColour = Color.Blue;
                     int borderSize = 1;
-                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
 
                 }
 
@@ -1330,6 +1380,7 @@ namespace ARKViewer.Models
             graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
 
+            imageRealmName = string.Empty;
 
             if (cacheImageTribes != null
                 && cacheImageTribes.Item1 == tribeId
@@ -1345,7 +1396,7 @@ namespace ARKViewer.Models
             {
                 lastDrawRequest = "tribes";
                 cacheImageTribes = new Tuple<long, bool, bool, bool>(tribeId, showStructures, showPlayers, showTames);
-
+                
                 graphics.DrawImage(MapImage, new Rectangle(0, 0, 1024, 1024));
                 graphics = AddMapStructures(graphics, mapOptions);
 
@@ -1362,7 +1413,6 @@ namespace ARKViewer.Models
                             {
                                 if (!(structure.Latitude.GetValueOrDefault(0) == 0 && structure.Longitude.GetValueOrDefault(0) == 0))
                                 {
-                                    float markerSize = 10f;
 
                                     var markerX = (float)(structure.Longitude.GetValueOrDefault(0)) * 1024 / 100;
                                     var markerY = (float)(structure.Latitude.GetValueOrDefault(0)) * 1024 / 100;
@@ -1387,11 +1437,11 @@ namespace ARKViewer.Models
                                         }
 
                                     }
-                                    graphics.FillEllipse(new SolidBrush(markerColor), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                                    graphics.FillEllipse(new SolidBrush(markerColor), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
 
                                     Color borderColour = Color.Green;
                                     int borderSize = 1;
-                                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
                                 }
 
 
@@ -1410,7 +1460,6 @@ namespace ARKViewer.Models
                             {
                                 if (!(tame.Latitude.GetValueOrDefault(0) == 0 && tame.Longitude.GetValueOrDefault(0) == 0))
                                 {
-                                    float markerSize = 10f;
 
                                     var markerX = (float)(tame.Longitude.GetValueOrDefault(0)) * 1024 / 100;
                                     var markerY = (float)(tame.Latitude.GetValueOrDefault(0)) * 1024 / 100;
@@ -1436,11 +1485,11 @@ namespace ARKViewer.Models
 
                                     }
 
-                                    graphics.FillEllipse(new SolidBrush(Color.AliceBlue), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                                    graphics.FillEllipse(new SolidBrush(Color.AliceBlue), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
 
                                     Color borderColour = Color.Gold;
                                     int borderSize = 1;
-                                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
+                                    graphics.DrawEllipse(new Pen(borderColour, borderSize), (float)markerX - (MarkerSize / 2), (float)markerY - (MarkerSize / 2), MarkerSize, MarkerSize);
                                 }
 
 
@@ -1533,6 +1582,7 @@ namespace ARKViewer.Models
             graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
 
+            imageRealmName = selectedRealm;
 
             if (cachedOptions.Equals(mapOptions)
                 && (cacheImagePlayers != null
@@ -1633,6 +1683,7 @@ namespace ARKViewer.Models
             graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
 
+            imageRealmName = string.Empty;
 
             graphics.DrawImage(MapImage, new Rectangle(0, 0, 1024, 1024));
 
@@ -1679,33 +1730,7 @@ namespace ARKViewer.Models
 
             Tuple<int, int, decimal, decimal, decimal, decimal> mapvals = Tuple.Create(1024, 1024, 0.0m, 0.0m, 100.0m, 100.0m);
 
-            //obelisks/tribute terminals
-            if (structureOptions.Terminals)
-            {
-                var terminalMarkers = pack.TerminalMarkers;
-                foreach (var terminal in terminalMarkers)
-                {
 
-                    //attempt to determine colour from class name
-                    Color brushColor = Color.DarkGreen;
-
-                    markerX = ((float)terminal.Longitude.GetValueOrDefault(0)) * 1024 / 100;
-                    markerY = ((float)terminal.Latitude.GetValueOrDefault(0)) * 1024 / 100;
-
-
-                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - 25f, (float)markerY - 25f, 50, 50);
-                    g.DrawEllipse(new Pen(Color.White, 2), (float)markerX - 25f, (float)markerY - 25f, 50, 50);
-
-                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_obelisk, new Size(40, 40));
-                    g.DrawImage(mapMarker, (float)markerX - 20f, (float)markerY - 20f);
-
-
-                }
-
-
-                //TODO:// Get user defined terminals from json
-
-            }
 
             if (structureOptions.Glitches)
             {
@@ -1713,18 +1738,17 @@ namespace ARKViewer.Models
                 {
                     //attempt to determine colour from class name
                     Color brushColor = Color.MediumPurple;
-
+                    Color borderColor = Color.White;
                     markerX = ((float)glitch.Longitude.GetValueOrDefault(0)) * 1024 / 100;
                     markerY = ((float)glitch.Latitude.GetValueOrDefault(0)) * 1024 / 100;
 
-                    float markerSize = 25;
 
-                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
-                    g.DrawEllipse(new Pen(Color.White, 2), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
 
-                    float iconSize = 18.75f;
-                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_glitch, new Size((int)iconSize, (int)iconSize));
-                    g.DrawImage(mapMarker, (float)markerX - (iconSize / 2), (float)markerY - (iconSize / 2));
+                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+
+                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_glitch, new Size((int)poiIconSize, (int)poiIconSize));
+                    g.DrawImage(mapMarker, (float)markerX - (poiIconSize / 2), (float)markerY - (poiIconSize / 2));
                 }
             }
 
@@ -1739,17 +1763,20 @@ namespace ARKViewer.Models
                     markerX = ((float)chargeNode.Longitude.GetValueOrDefault(0)) * 1024 / 100;
                     markerY = ((float)chargeNode.Latitude.GetValueOrDefault(0)) * 1024 / 100;
 
-                    g.FillEllipse(new SolidBrush(Color.White), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
-
+                    
                     Color borderColor = Color.Red;
                     if (chargeNode.Inventory.Items.Count > 0)
                     {
                         borderColor = Color.Green;
                     }
 
-                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
-                    Bitmap chargeMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_battery, new Size(20, 20));
-                    g.DrawImage(chargeMarker, (float)markerX - 10.0f, (float)markerY - 10.0f);
+                    Color brushColor = Color.White;
+
+                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+
+                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_battery, new Size((int)poiIconSize, (int)poiIconSize));
+                    g.DrawImage(mapMarker, (float)markerX - (poiIconSize / 2), (float)markerY - (poiIconSize / 2));
                 }
 
 
@@ -1765,17 +1792,22 @@ namespace ARKViewer.Models
                     markerX = ((float)beaverDam.Longitude.GetValueOrDefault(0)) * 1024 / 100;
                     markerY = ((float)beaverDam.Latitude.GetValueOrDefault(0)) * 1024 / 100;
 
-                    g.FillEllipse(new SolidBrush(Color.White), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
-
+                    
                     Color borderColor = Color.Red;
              
                     if (beaverDam.Inventory.Items.Count > 0)
                     {
                         borderColor = Color.Green;
                     }
-                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
-                    Bitmap beaverMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_beaver, new Size(20, 20));
-                    g.DrawImage(beaverMarker, (float)markerX - 10.0f, (float)markerY - 10.0f);
+
+                    Color brushColor = Color.White;
+
+                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+
+
+                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_beaver, new Size((int)poiIconSize, (int)poiIconSize));
+                    g.DrawImage(mapMarker, (float)markerX - (poiIconSize / 2), (float)markerY - (poiIconSize / 2));
                 }
             }
 
@@ -1788,18 +1820,19 @@ namespace ARKViewer.Models
                     markerX = ((float)deinoNest.Longitude.GetValueOrDefault(0)) * 1024 / 100;
                     markerY = ((float)deinoNest.Latitude.GetValueOrDefault(0)) * 1024 / 100;
 
-                    g.FillEllipse(new SolidBrush(Color.White), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
-
-
                     Color borderColor = Color.Red;
                     if (deinoNest.Inventory.Items.Count > 0)
                     {
                         borderColor = Color.Green;
                     }
-                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
+                    Color brushColor = Color.White;
 
-                    Bitmap deinoMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_deino, new Size(20, 20));
-                    g.DrawImage(deinoMarker, (float)markerX - 10.0f, (float)markerY - 10.0f);
+                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+
+
+                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_deino, new Size((int)poiIconSize, (int)poiIconSize));
+                    g.DrawImage(mapMarker, (float)markerX - (poiIconSize / 2), (float)markerY - (poiIconSize / 2));
 
                 }
             }
@@ -1815,8 +1848,6 @@ namespace ARKViewer.Models
                     markerY = ((float)wyvernNest.Latitude.GetValueOrDefault(0)) * 1024 / 100;
 
 
-                    g.FillEllipse(new SolidBrush(Color.White), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
-
                     Color borderColor = Color.Red;
                     if (wyvernNest.Inventory.Items.Count > 0)
                     {
@@ -1825,10 +1856,14 @@ namespace ARKViewer.Models
                     }
 
 
-                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
+                    Color brushColor = Color.White;
 
-                    Bitmap wyvernMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_wyvern, new Size(20, 20));
-                    g.DrawImage(wyvernMarker, (float)markerX - 10.0f, (float)markerY - 10.0f);
+                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+
+
+                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_wyvern, new Size((int)poiIconSize, (int)poiIconSize));
+                    g.DrawImage(mapMarker, (float)markerX - (poiIconSize / 2), (float)markerY - (poiIconSize / 2));
 
                 }
             }
@@ -1845,19 +1880,20 @@ namespace ARKViewer.Models
                     markerY = ((float)drakeNest.Latitude.GetValueOrDefault(0)) * 1024 / 100;
 
 
-                    Color markerColor = Color.White;
-                    g.FillEllipse(new SolidBrush(markerColor), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
-
 
                     Color borderColor = Color.Red;
                     if (drakeNest.Inventory.Items.Count > 0)
                     {
                         borderColor = Color.Green;
                     }
-                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
+                    Color brushColor = Color.White;
 
-                    Bitmap wyvernMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_rockdrake, new Size(20, 20));
-                    g.DrawImage(wyvernMarker, (float)markerX - 10.0f, (float)markerY - 10.0f);
+                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+
+
+                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_rockdrake, new Size((int)poiIconSize, (int)poiIconSize));
+                    g.DrawImage(mapMarker, (float)markerX - (poiIconSize / 2), (float)markerY - (poiIconSize / 2));
 
                 }
             }
@@ -1871,21 +1907,22 @@ namespace ARKViewer.Models
 
                     markerX = ((float)magmaNest.Longitude.GetValueOrDefault(0)) * 1024 / 100;
                     markerY = ((float)magmaNest.Latitude.GetValueOrDefault(0)) * 1024 / 100;
-
-                    Color markerColor = Color.White;
-                    g.FillEllipse(new SolidBrush(markerColor), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
-
+ 
                     Color borderColor = Color.Red;
 
                     if (magmaNest.Inventory.Items.Count > 0)
                     {
                         borderColor = Color.Green;
                     }
-                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
 
-                    Bitmap magmaMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_magmasaur, new Size(20, 20));
-                    g.DrawImage(magmaMarker, (float)markerX - 10.0f, (float)markerY - 10.0f);
+                    Color brushColor = Color.White;
 
+                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+
+
+                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_magmasaur, new Size((int)poiIconSize, (int)poiIconSize));
+                    g.DrawImage(mapMarker, (float)markerX - (poiIconSize / 2), (float)markerY - (poiIconSize / 2));
                 }
             }
 
@@ -1899,12 +1936,15 @@ namespace ARKViewer.Models
                 {
                     markerX = ((float)oilVein.Longitude.GetValueOrDefault(0)) * 1024 / 100;
                     markerY = ((float)oilVein.Latitude.GetValueOrDefault(0)) * 1024 / 100;
+                    Color brushColor = Color.Black;
+                    Color borderColor = Color.White;
 
-                    g.FillEllipse(new SolidBrush(Color.White), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
-                    g.DrawEllipse(new Pen(Color.Black, 2), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
+                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
 
-                    Bitmap oilMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_oil, new Size(20, 20));
-                    g.DrawImage(oilMarker, (float)markerX - 10.0f, (float)markerY - 10.0f);
+
+                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_oil, new Size((int)poiIconSize, (int)poiIconSize));
+                    g.DrawImage(mapMarker, (float)markerX - (poiIconSize / 2), (float)markerY - (poiIconSize / 2));
 
                 }
 
@@ -1919,11 +1959,15 @@ namespace ARKViewer.Models
                     markerX = ((float)waterVein.Longitude.GetValueOrDefault(0)) * 1024 / 100;
                     markerY = ((float)waterVein.Latitude.GetValueOrDefault(0)) * 1024 / 100;
 
-                    g.FillEllipse(new SolidBrush(Color.White), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
-                    g.DrawEllipse(new Pen(Color.Black, 2), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
+                    Color brushColor = Color.White;
+                    Color borderColor = Color.Black;
 
-                    Bitmap waterMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_water, new Size(20, 20));
-                    g.DrawImage(waterMarker, (float)markerX - 10.0f, (float)markerY - 10.0f);
+                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+
+
+                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_water, new Size((int)poiIconSize, (int)poiIconSize));
+                    g.DrawImage(mapMarker, (float)markerX - (poiIconSize / 2), (float)markerY - (poiIconSize / 2));
 
                 }
 
@@ -1937,14 +1981,15 @@ namespace ARKViewer.Models
                 {
                     markerX = ((float)gasVein.Longitude.GetValueOrDefault(0)) * 1024 / 100;
                     markerY = ((float)gasVein.Latitude.GetValueOrDefault(0)) * 1024 / 100;
+                    Color brushColor = Color.WhiteSmoke;
+                    Color borderColor = Color.LightBlue;
 
-                    g.FillEllipse(new SolidBrush(Color.White), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
+                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
 
-                    Color borderColor = Color.WhiteSmoke;
-                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - 15f, (float)markerY - 15f, 30, 30);
 
-                    Bitmap gasMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_gas, new Size(20, 20));
-                    g.DrawImage(gasMarker, (float)markerX - 10.0f, (float)markerY - 10.0f);
+                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_gas, new Size((int)poiIconSize, (int)poiIconSize));
+                    g.DrawImage(mapMarker, (float)markerX - (poiIconSize / 2), (float)markerY - (poiIconSize / 2));
 
                 }
             }
@@ -1958,11 +2003,15 @@ namespace ARKViewer.Models
                     markerX = ((float)artifact.Longitude.GetValueOrDefault(0)) * 1024 / 100;
                     markerY = ((float)artifact.Latitude.GetValueOrDefault(0)) * 1024 / 100;
 
-                    g.FillEllipse(new SolidBrush(Color.FloralWhite), (float)markerX - 15.0f, (float)markerY - 15.0f, 30, 30);
-                    g.DrawEllipse(new Pen(Color.Yellow, 1), (float)markerX - 15.0f, (float)markerY - 15.0f, 30, 30);
+                    Color brushColor = Color.Black;
+                    Color borderColor = Color.Yellow;
 
-                    Bitmap gasMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_trophy, new Size(20, 20));
-                    g.DrawImage(gasMarker, (float)markerX - 10.0f, (float)markerY - 10.0f);
+                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+
+
+                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_trophy, new Size((int)poiIconSize, (int)poiIconSize));
+                    g.DrawImage(mapMarker, (float)markerX - (poiIconSize / 2), (float)markerY - (poiIconSize / 2));
 
                 }
 
@@ -1976,18 +2025,66 @@ namespace ARKViewer.Models
                     markerX = ((float)hive.Longitude.GetValueOrDefault(0)) * 1024 / 100;
                     markerY = ((float)hive.Latitude.GetValueOrDefault(0)) * 1024 / 100;
 
-                    g.FillEllipse(new SolidBrush(Color.FloralWhite), (float)markerX - 15.0f, (float)markerY - 15.0f, 30, 30);
-                    g.DrawEllipse(new Pen(Color.Yellow, 1), (float)markerX - 15.0f, (float)markerY - 15.0f, 30, 30);
+                    Color brushColor = Color.FloralWhite;
+                    Color borderColor = Color.Yellow;
 
-                    Bitmap hiveMarker = new Bitmap(ARKViewer.Properties.Resources.beehive, new Size(20, 20));
-                    g.DrawImage(hiveMarker, (float)markerX - 10.0f, (float)markerY - 10.0f);
+                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - (poiMarkerSize / 2), (float)markerY - (poiMarkerSize / 2), poiMarkerSize, poiMarkerSize);
+
+
+                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.beehive, new Size((int)poiIconSize, (int)poiIconSize));
+                    g.DrawImage(mapMarker, (float)markerX - (poiIconSize / 2), (float)markerY - (poiIconSize / 2));
 
                 }
 
             }
 
 
+            //obelisks/tribute terminals
+            if (structureOptions.Terminals)
+            {
+                var terminalMarkers = pack.TerminalMarkers;
+                foreach (var terminal in terminalMarkers)
+                {
 
+                    //attempt to determine colour from class name
+                    Color brushColor = Color.Silver;
+                    if (terminal.DisplayName.Contains("green", StringComparison.CurrentCultureIgnoreCase))
+                    {
+                        brushColor = Color.Green;
+                    }
+                    if (terminal.DisplayName.Contains("blue", StringComparison.CurrentCultureIgnoreCase))
+                    {
+                        brushColor = Color.Blue;
+                    }
+                    if (terminal.DisplayName.Contains("red", StringComparison.CurrentCultureIgnoreCase))
+                    {
+                        brushColor = Color.Red;
+                    }
+                    if (terminal.DisplayName.Contains("purple", StringComparison.CurrentCultureIgnoreCase))
+                    {
+                        brushColor = Color.Purple;
+                    }
+
+                    markerX = ((float)terminal.Longitude.GetValueOrDefault(0)) * 1024 / 100;
+                    markerY = ((float)terminal.Latitude.GetValueOrDefault(0)) * 1024 / 100;
+
+                    Color borderColor = Color.White;
+
+                    float terminalMarkerSize = poiMarkerSize * 1.25f;
+                    float terminalIconSize = poiIconSize * 1.25f;
+
+                    g.FillEllipse(new SolidBrush(brushColor), (float)markerX - (terminalMarkerSize / 2), (float)markerY - (terminalMarkerSize / 2), terminalMarkerSize, terminalMarkerSize);
+                    g.DrawEllipse(new Pen(borderColor, 2), (float)markerX - (terminalMarkerSize / 2), (float)markerY - (terminalMarkerSize / 2), terminalMarkerSize, terminalMarkerSize);
+
+                    Bitmap mapMarker = new Bitmap(ARKViewer.Properties.Resources.structure_marker_obelisk, new Size((int)terminalIconSize, (int)terminalIconSize));
+                    g.DrawImage(mapMarker, (float)markerX - (terminalIconSize / 2), (float)markerY - (terminalIconSize / 2));
+                }
+
+
+                //TODO:// Get user defined terminals from json
+
+            }
 
             return g;
         }
@@ -2037,7 +2134,7 @@ namespace ARKViewer.Models
                 var markerX = (float)(lon) * 1024 / 100;
                 var markerY = (float)(lat) * 1024 / 100;
                 Color markerColor = Color.Red;
-                float markerSize = 20;
+                float markerSize = (float)(MarkerSize * 1.2);
 
                 g.FillEllipse(new SolidBrush(markerColor), (float)markerX - (markerSize / 2), (float)markerY - (markerSize / 2), markerSize, markerSize);
 

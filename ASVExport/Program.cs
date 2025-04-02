@@ -251,8 +251,8 @@ namespace ASVExport
                     JObject packConfig = JObject.Parse(packConfigText);
 
                     mapFilename = packConfig.Property("mapFilename") == null ? "" : packConfig.Property("mapFilename").Value.ToString();
-                    exportFilename = packConfig.Property("tribeId") == null ? "" : packConfig.Property("exportFilename").Value.ToString();
-                    tribeId = packConfig.Property("exportFilename") == null ? 0 : (long)packConfig.Property("tribeId").Value;
+                    exportFilename = packConfig.Property("exportFilename") == null ? "" : packConfig.Property("exportFilename").Value.ToString();
+                    tribeId = packConfig.Property("tribeId") == null ? 0 : (long)packConfig.Property("tribeId").Value;
                     playerId = packConfig.Property("playerId") == null ? 0 : (long)packConfig.Property("playerId").Value;
                     filterLat = packConfig.Property("filterLat") == null ? 50 : (decimal)packConfig.Property("filterLat").Value;
                     filterLon = packConfig.Property("filterLon") == null ? 50 : (decimal)packConfig.Property("filterLon").Value;
@@ -579,7 +579,6 @@ namespace ASVExport
 
         private static void ExportStoredTribes(string saveFilename, string exportFolder)
         {
-
             FileInfo fileInfo = new FileInfo(saveFilename);
 
             using (Stream stream = File.OpenRead(saveFilename))
@@ -598,7 +597,7 @@ namespace ASVExport
                             .WithStoredProfiles(false,90)
                             .WithBuildComponentTree(false));
 
-
+                    arkSavegame.FileTime = fileInfo.LastWriteTime.ToLocalTime();
                     arkSavegame.ExtractStoredArkTribes(archive, exportFolder);
                 }
 

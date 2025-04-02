@@ -1,9 +1,4 @@
 ﻿using AsaSavegameToolkit.Propertys;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace AsaSavegameToolkit
 {
@@ -17,6 +12,31 @@ namespace AsaSavegameToolkit
             {
                 return Objects.FirstOrDefault(o => o.ClassName.EndsWith("PrimalPlayerDataBP_C"));
             }
+        }
+
+
+        public void Read(AsaArchive archive)
+        {
+            var profileVersion = archive.ReadInt();
+            var profilesCount = archive.ReadInt();
+            if (profilesCount == 0)
+            {
+                return;
+            }
+
+            Objects.Clear();
+
+            while (profilesCount-- > 0)
+            {
+                var aObject = new AsaObject(archive);
+                Objects.Add(aObject);
+            }
+
+            foreach (var aObject in Objects)
+            {
+                aObject.ReadProperties(archive,false);
+            }
+
         }
 
         public void Read(string filename)
@@ -45,6 +65,7 @@ namespace AsaSavegameToolkit
                         aObject.ReadProperties(archive);
                     }
                 }
+                ms.Close();
             }
         }
 

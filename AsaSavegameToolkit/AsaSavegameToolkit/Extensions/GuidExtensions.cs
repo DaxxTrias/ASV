@@ -1,14 +1,8 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace AsaSavegameToolkit.Extensions
+﻿namespace AsaSavegameToolkit.Extensions
 {
     public static class GuidExtensions
     {
-        private static readonly Dictionary<int, int> translation = new Dictionary<int, int> {
+        private static readonly Dictionary<int, int> arkGuidTranslation = new Dictionary<int, int> {
                 { 0, 0 },
                 { 1, 1 },
                 { 2, 2 },
@@ -33,7 +27,7 @@ namespace AsaSavegameToolkit.Extensions
 
             byte[] result = new byte[16];
 
-            foreach (KeyValuePair<int, int> pair in translation)
+            foreach (KeyValuePair<int, int> pair in arkGuidTranslation)
             {
                 result[pair.Key] = bytes[pair.Value];
             }
@@ -45,7 +39,7 @@ namespace AsaSavegameToolkit.Extensions
         {
             byte[] temp = new byte[16];
 
-            foreach (KeyValuePair<int, int> pair in translation)
+            foreach (KeyValuePair<int, int> pair in arkGuidTranslation)
             {
                 temp[pair.Value] = bytes[pair.Key];
             }

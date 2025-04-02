@@ -15,7 +15,9 @@ namespace ASVPack.Models
 {
     [DataContract]
     public class ContentItem
+
     {
+        [DataMember] public long ItemId { get; set; } = 0;
         [DataMember] public string ClassName { get; set; } = "";
         [DataMember] public string CustomName { get; set; } = "";
         [DataMember] public string CraftedByPlayer { get; set; } = "";
@@ -25,10 +27,10 @@ namespace ASVPack.Models
         [DataMember] public int Quantity { get; set; } = 1;
         [DataMember] public bool IsBlueprint { get; set; } = false;
         [DataMember] public bool IsEngram { get; set; } = false;
+        [DataMember] public bool IsInput { get; set; } = false;
         [DataMember] public float? Rating { get; set; } = null;
         [DataMember] public DateTime? UploadedTime { get; set; } = null;
         public double UploadedTimeInGame { get; set; } = 0;
-
 
         public ContentItem(StructPropertyList uploadData)
         {
@@ -108,6 +110,9 @@ namespace ASVPack.Models
             CraftedByPlayer = itemObject.GetPropertyValue<string>("CrafterCharacterName", 0, "");
             UploadedTimeInGame = 0;
             UploadedTime = null;
+            ItemId  = itemObject.GetItemId();
+
+            //customitemdata> customdataname = "StoredTraits"
 
 
             if (itemObject.HasAnyProperty("ItemRating") & !ClassName.ToLower().Contains("egg"))
@@ -125,6 +130,22 @@ namespace ASVPack.Models
             }
 
 
+
+
+        }
+
+        public ContentItem(string foliageClassName, int foliageCount)
+        {
+            ClassName = foliageClassName;
+            CustomName = string.Empty;
+            IsBlueprint = false;
+            IsEngram = false;
+            Quantity = foliageCount;
+            CraftedByTribe = string.Empty;
+            CraftedByPlayer = string.Empty ;
+            UploadedTimeInGame = 0;
+            UploadedTime = null;
+            ItemId = -1;
 
 
         }

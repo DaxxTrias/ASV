@@ -34,7 +34,6 @@ namespace ARKViewer
         }
 
         private static ASVDataManager cm;
-        private ColumnHeader SortingColumn_Markers = null;
         private Image currentMapImage = null;
         private int mapMouseDownX;
         private int mapMouseDownY;
@@ -116,7 +115,7 @@ namespace ARKViewer
 
             DrawMapImage(cm.GetMapImageTribes(tribeId, showStructures, showPlayers, showTames, selectedLocations, mapOptions, CustomMarkers));
         }
-        public void DrawMapImageItems(long tribeId, string className,  List<Tuple<float,float>> selectedLocations, string selectedRealm)
+        public void DrawMapImageItems(long tribeId, string className, List<Tuple<float, float>> selectedLocations, string selectedRealm)
         {
             var c = Program.ProgramConfig;
 
@@ -137,11 +136,12 @@ namespace ARKViewer
                 BeeHives = c.BeeHives
             };
 
+
             DrawMapImage(cm.GetMapImageItems(tribeId, className, selectedLocations, mapOptions, CustomMarkers, selectedRealm));
         }
 
 
-        public void DrawMapImageWild(string className, string productionClassName, int minLevel, int maxLevel, float filterLat, float filterLon, float filterRadius, List<Tuple<float,float>> selectedLocations, string selectedRealm)
+        public void DrawMapImageWild(string className, string productionClassName, int minLevel, int maxLevel, float filterLat, float filterLon, float filterRadius, List<Tuple<float, float>> selectedLocations, string selectedRealm)
         {
             var c = Program.ProgramConfig;
             ASVStructureOptions mapOptions = new ASVStructureOptions()
@@ -164,7 +164,7 @@ namespace ARKViewer
 
             DrawMapImage(cm.GetMapImageWild(className, productionClassName, minLevel, maxLevel, filterLat, filterLon, filterRadius, selectedLocations, mapOptions, CustomMarkers, selectedRealm));
         }
-        public void DrawMapImageTamed(string className, string productionClassName, bool includeStored, long tribeId, long playerId, List<Tuple<float, float>> selectedLocations, string selectedRealm)
+        public void DrawMapImageTamed(string className, string productionClassName, int filterType, long tribeId, long playerId, List<Tuple<float, float>> selectedLocations, string selectedRealm, float fromLat = 50, float fromLon = 50, float fromRadius = 100)
         {
             var c = Program.ProgramConfig;
             ASVStructureOptions mapOptions = new ASVStructureOptions()
@@ -183,7 +183,9 @@ namespace ARKViewer
                 WaterVeins = c.WaterVeins,
                 BeeHives = c.BeeHives
             };
-            DrawMapImage(cm.GetMapImageTamed(className, productionClassName, includeStored, tribeId, playerId, selectedLocations, mapOptions, CustomMarkers, selectedRealm));
+
+
+            DrawMapImage(cm.GetMapImageTamed(className, productionClassName, filterType, tribeId, playerId, selectedLocations, mapOptions, CustomMarkers, selectedRealm, fromLat,fromLon,fromRadius));
 
         }
         public void DrawMapImageDroppedItems(long droppedPlayerId, string droppedClass, List<Tuple<float, float>> selectedLocations, string selectedRealm)
@@ -205,10 +207,12 @@ namespace ARKViewer
                 WaterVeins = c.WaterVeins,
                 BeeHives = c.BeeHives
             };
+
+
             DrawMapImage(cm.GetMapImageDroppedItems(droppedPlayerId, droppedClass, selectedLocations, mapOptions, CustomMarkers, selectedRealm));
 
         }
-        public void DrawMapImageDropBags(long droppedPlayerId, List<Tuple<float, float>> selectedLocations)
+        public void DrawMapImageDropBags(long droppedPlayerId, List<Tuple<float, float>> selectedLocations, string selectedRealm)
         {
             var c = Program.ProgramConfig;
             ASVStructureOptions mapOptions = new ASVStructureOptions()
@@ -227,9 +231,10 @@ namespace ARKViewer
                 WaterVeins = c.WaterVeins,
                 BeeHives = c.BeeHives
             };
-            DrawMapImage(cm.GetMapImageDropBags(droppedPlayerId, selectedLocations, mapOptions, CustomMarkers));
+
+            DrawMapImage(cm.GetMapImageDropBags(droppedPlayerId, selectedLocations, mapOptions, CustomMarkers, selectedRealm));
         }
-        public void DrawMapImagePlayerStructures(string className, long tribeId, long playerId, List<Tuple<float, float>> selectedLocations, string selectedRealm)
+        public void DrawMapImagePlayerStructures(string className, long tribeId, long playerId, List<Tuple<float, float>> selectedLocations, string selectedRealm, float fromLat = 50, float fromLon = 50, float fromRadius = 100)
         {
             var c = Program.ProgramConfig;
             ASVStructureOptions mapOptions = new ASVStructureOptions()
@@ -248,7 +253,9 @@ namespace ARKViewer
                 WaterVeins = c.WaterVeins,
                 BeeHives = c.BeeHives
             };
-            DrawMapImage(cm.GetMapImagePlayerStructures(className, tribeId, playerId, selectedLocations, mapOptions, CustomMarkers, selectedRealm));
+
+
+            DrawMapImage(cm.GetMapImagePlayerStructures(className, tribeId, playerId, selectedLocations, mapOptions, CustomMarkers, selectedRealm, fromLat,fromLon,fromRadius));
 
         }
         public void DrawMapImagePlayers(long tribeId, long playerId, List<Tuple<float, float>> selectedLocations, string selectedRealm)
@@ -270,6 +277,8 @@ namespace ARKViewer
                 WaterVeins = c.WaterVeins,
                 BeeHives = c.BeeHives
             };
+
+
             DrawMapImage(cm.GetMapImagePlayers(tribeId, playerId, selectedLocations, mapOptions, CustomMarkers, selectedRealm));
         }
 
@@ -312,6 +321,9 @@ namespace ARKViewer
             var newSize = 1024 * ((double)trackZoom.Value / 100.0);
             picMap.Width = (int)newSize;
             picMap.Height = (int)newSize;
+
+
+
 
             Program.ProgramConfig.Zoom = trackZoom.Value;
         }
@@ -364,7 +376,7 @@ namespace ARKViewer
                 }
             }
 
-            if(e.Button == MouseButtons.None)
+            if (e.Button == MouseButtons.None)
             {
                 if (picMap.Image == null) return;
 
@@ -372,7 +384,7 @@ namespace ARKViewer
                 double clickY = e.Y / (zoomLevel);
                 double clickX = e.X / (zoomLevel);
 
-                var customMarker = cm.CustomMarkerRegions.FirstOrDefault(x =>
+                var customMarker = cm.CustomMarkerRegions.Find(x =>
                     clickY >= x.Item1.Top
                     && clickY <= x.Item1.Top + x.Item1.Height
                     && clickX >= x.Item1.Left
@@ -388,7 +400,7 @@ namespace ARKViewer
                     toolTip2.RemoveAll();
                 }
             }
-            
+
 
         }
 
@@ -402,7 +414,7 @@ namespace ARKViewer
 
             double latitude = clickY / 10.25;
             double longitude = clickX / 10.25;
-            if(e.Button == MouseButtons.Left) OnMapClicked?.Invoke((decimal)latitude, (decimal)longitude);
+            if (e.Button == MouseButtons.Left) OnMapClicked?.Invoke((decimal)latitude, (decimal)longitude);
         }
 
         private void trackZoom_ValueChanged(object sender, EventArgs e)

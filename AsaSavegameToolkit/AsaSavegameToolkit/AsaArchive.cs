@@ -1,9 +1,5 @@
 ﻿using AsaSavegameToolkit.Types;
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Text;
-using System.Threading.Tasks;
 
 namespace AsaSavegameToolkit
 {
@@ -16,8 +12,9 @@ namespace AsaSavegameToolkit
         private readonly BinaryReader mbbReader;
 
 
+        public Dictionary<int,string> ConstantNameTable { get; set; } = new Dictionary<int,string>();
         public Dictionary<int, string> NameTable { get; set; } = new Dictionary<int, string>();
-        public bool HasNameTable => NameTable != null && NameTable.Count > 0;
+        public bool HasNameTable => (NameTable != null && NameTable.Count > 0) || (ConstantNameTable!=null && ConstantNameTable.Count > 0);
         public bool HasInstanceInNameTable { get; private set; }
 
         public long Position
@@ -28,6 +25,8 @@ namespace AsaSavegameToolkit
 
         public long Limit => mbb.Length;
 
+        public short SaveVersion { get; internal set; }
+
         public AsaArchive(Stream stream)
         {
             mbb = stream;
@@ -35,17 +34,6 @@ namespace AsaSavegameToolkit
         }
 
         #region read data
-
-        public void SkipString()
-        {
-            int size = mbbReader.ReadInt32();
-
-            bool multibyte = size < 0;
-            int absSize = Math.Abs(size);
-            int readSize = multibyte ? absSize * 2 : absSize;
-
-            mbb.Seek(readSize, SeekOrigin.Current);
-        }
 
         public void SkipBytes(int count)
         {
@@ -109,13 +97,30 @@ namespace AsaSavegameToolkit
         private AsaName readNameFromTable()
         {
             int id = mbbReader.ReadInt32();
-
-            if (!NameTable.ContainsKey(id))
+            string name = string.Empty;
+            if(NameTable.ContainsKey(id)) 
             {
-                return null;
+                name = NameTable[id];
+            }
+            else
+            {
+                if (ConstantNameTable.Count > 0)
+                {
+                    if (ConstantNameTable.ContainsKey(id))
+                    {
+                        name = ConstantNameTable[id];
+                    }
+                    else
+                    {
+                        name = string.Concat("Unknown_", id);
+                    }                    
+                }
+                else
+                {
+                    return null;
+                }
             }
 
-            string name = NameTable[id];
             if (HasInstanceInNameTable)
             {
                 return AsaName.From(name);
@@ -135,6 +140,11 @@ namespace AsaSavegameToolkit
         public int ReadInt()
         {
             return mbbReader.ReadInt32();
+        }
+
+        public uint ReadUInt()
+        {
+            return mbbReader.ReadUInt32();
         }
 
         public short ReadShort()
@@ -157,11 +167,6 @@ namespace AsaSavegameToolkit
             return mbbReader.ReadByte();
         }
 
-        public sbyte ReadSByte()
-        {
-            return mbbReader.ReadSByte();
-        }
-
         public byte[] ReadBytes(int length)
         {
             return mbbReader.ReadBytes(length);
@@ -171,6 +176,15 @@ namespace AsaSavegameToolkit
         {
             int val = mbbReader.ReadInt32();
             return val != 0;
+        }
+
+
+        public string ReadStringStored()
+        {
+            int length = ReadByte();
+            SkipBytes(1);
+            return UTF8Encoding.UTF8.GetString(ReadBytes(length - 1));
+           
         }
 
         #endregion read data

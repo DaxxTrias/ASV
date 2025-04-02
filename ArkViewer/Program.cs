@@ -1,8 +1,11 @@
-﻿using ARKViewer.Configuration;
+﻿using ArkViewer.Configuration;
+using ARKViewer.Configuration;
 using ARKViewer.Models;
+using ARKViewer.Models.NameMap;
 using ASVPack;
 using ASVPack.Models;
 using Microsoft.Win32;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using NLog;
 using System;
@@ -32,6 +35,7 @@ namespace ARKViewer
         public static ContentPack LoadedPack { get; set; } = null;
         public static ViewerConfiguration ProgramConfig { get; set; }
         public static ApiConfiguration ApiConfig { get; set; }
+        public static List<RCONTabCommands> TabCommands { get; set; } = new List<RCONTabCommands>();
 
         public static string GetSteamFolder()
         {
@@ -90,6 +94,7 @@ namespace ARKViewer
         static void Main()
         {
 
+            Application.SetHighDpiMode(HighDpiMode.DpiUnawareGdiScaled);
             Application.ThreadException += Application_ThreadException;
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
 
@@ -132,9 +137,9 @@ namespace ARKViewer
 
                 if (!File.Exists(ProgramConfig.SelectedFile))
                 {
-                    using(frmSettings settings = new frmSettings())
+                    using (frmSettings settings = new frmSettings())
                     {
-                        if(settings.ShowDialog() != DialogResult.OK)
+                        if (settings.ShowDialog() != DialogResult.OK)
                         {
                             LogWriter.Info("No game file selected, aborting.");
                             return;
@@ -142,12 +147,35 @@ namespace ARKViewer
                     }
                 }
 
+                string rconCommandListFilename = Path.Combine(AppContext.BaseDirectory, "commands.json");
+                if(File.Exists(rconCommandListFilename))
+                {
+                    TabCommands = new List<RCONTabCommands>();
+
+                    string fileContent = File.ReadAllText(rconCommandListFilename);
+                    JObject jsonTabContainer = JObject.Parse(fileContent);
+
+                    JArray tabList = (JArray)jsonTabContainer.GetValue("tabs");
+                    foreach (JObject tabObject in tabList)
+                    {
+                        var tabCommands = JsonConvert.DeserializeObject<RCONTabCommands>(tabObject.ToString());
+                        TabCommands.Add(tabCommands);
+                    }
+                }
+
                 frmViewer mainForm = new frmViewer();
-                mainForm.UpdateProgress("Loading content pack...");
+                if (ProgramConfig.LoadSaveOnStartup)
+                {
+                    mainForm.UpdateProgress("Loading content pack...");
+                }
+            
                 mainForm.Show();
                 mainForm.BringToFront();
                 Application.DoEvents();
-                mainForm.LoadContent(ProgramConfig.SelectedFile,false);
+                if (ProgramConfig.LoadSaveOnStartup)
+                {
+                    mainForm.LoadContent(ProgramConfig.SelectedFile, false);
+                }                
 
                 Application.Run(mainForm);
             }
@@ -253,7 +281,7 @@ namespace ARKViewer
 
                         ContentContainer container = new ContentContainer();
 
-                        container.LoadSaveGame(inputFilename, "", clusterFolder,30);
+                        container.LoadSaveGame(inputFilename, "", clusterFolder,30, ProgramConfig.MaxCores);
                         ASVDataManager exportManger = new ASVDataManager(container);
 
                         switch (commandOptionCheck)
@@ -649,7 +677,7 @@ namespace ARKViewer
                 string exportFolder = Path.GetDirectoryName(tamedImageFilename);
                 if (!Directory.Exists(exportFolder)) Directory.CreateDirectory(exportFolder);
                 LogWriter.Info($"Exporting Tames Image.");
-                var image = exportManger.GetMapImageTamed(tamedClassName, "", true, tribeId, playerId, new List<Tuple<float, float>>(), new ASVStructureOptions(), new List<ContentMarker>(), "");
+                var image = exportManger.GetMapImageTamed(tamedClassName, "", 0, tribeId, playerId, new List<Tuple<float, float>>(), new ASVStructureOptions(), new List<ContentMarker>(), "");
                 if (image != null)
                 {
                     image.Save(tamedImageFilename);

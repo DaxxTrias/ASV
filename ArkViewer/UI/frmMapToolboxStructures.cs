@@ -21,7 +21,6 @@ namespace ARKViewer
 
         frmMapView MapViewer = null;
         bool isLoading = false;
-        bool isUpdating = false;
         ASVDataManager cm = null;
 
         ColumnHeader SortingColumn_Structures = null;
@@ -39,6 +38,23 @@ namespace ARKViewer
             return inst;
         }
 
+        private void ownerDrawCombo_DrawItem(object sender, DrawItemEventArgs e)
+        {
+            if (e.Index < 0) return;
+
+            System.Windows.Forms.ComboBox comboBox = sender as System.Windows.Forms.ComboBox;
+
+            e.DrawBackground();
+
+            Rectangle r1 = e.Bounds;
+            r1.Width = r1.Width;
+
+            using (SolidBrush sb = new SolidBrush(comboBox.ForeColor))
+            {
+                string drawText = comboBox.Items[e.Index].ToString();
+                e.Graphics.DrawString(drawText, e.Font, sb, r1);
+            }
+        }
 
         private void LoadWindowSettings()
         {
@@ -479,7 +495,7 @@ namespace ARKViewer
             selectedStructure.Z = selectedStructure.Z;
 
             List<Tuple<float, float>> selectedLocations = new List<Tuple<float, float>>();
-            foreach(ListViewItem item in lvwStructureLocations.SelectedItems)
+            foreach (ListViewItem item in lvwStructureLocations.SelectedItems)
             {
                 ContentStructure itemStructure = (ContentStructure)item.Tag;
                 selectedLocations.Add(new Tuple<float, float>(itemStructure.Latitude.GetValueOrDefault(0), itemStructure.Longitude.GetValueOrDefault(0)));

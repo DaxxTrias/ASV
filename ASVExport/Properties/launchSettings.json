@@ -2,7 +2,7 @@
   "profiles": {
     "ASVExport": {
       "commandName": "Project",
-      "commandLineArgs": "arkprofile \"c:\\temp\\Debug\\TheIsland.ark\" \"c:\\temp\\Debug\\Tribes\\\""
+      "commandLineArgs": "pack \"c:\\temp\\packconfig.json\""
     }
   }
 }

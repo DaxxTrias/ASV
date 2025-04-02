@@ -1,8 +1,8 @@
 ﻿using AsaSavegameToolkit;
+using AsaSavegameToolkit.Propertys;
 using AsaSavegameToolkit.Structs;
 using AsaSavegameToolkit.Types;
 using ASVPack.Extensions;
-using ICSharpCode.SharpZipLib.Zip;
 using NLog;
 using SavegameToolkit;
 using SavegameToolkit.Arrays;
@@ -10,20 +10,11 @@ using SavegameToolkit.Propertys;
 using SavegameToolkit.Structs;
 using SavegameToolkit.Types;
 using SavegameToolkitAdditions;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Collections.Immutable;
-using System.ComponentModel;
 using System.Diagnostics;
 using System.IO.Compression;
-using System.Linq;
-using System.Numerics;
 using System.Runtime.Serialization;
-using System.Security;
-using System.Text;
-using System.Text.Unicode;
-using System.Threading.Tasks;
 
 
 namespace ASVPack.Models
@@ -54,6 +45,8 @@ namespace ASVPack.Models
         [DataMember] public ContentMap LoadedMap { get; set; } = new ContentMap();
 
         [DataMember] public string MapName { get; set; } = "";
+        [DataMember] public int MapDay { get; set; } = 0;
+        [DataMember] public DateTime MapTime { get; set; } = DateTime.Now.Date;
         [DataMember] public List<ContentStructure> MapStructures { get; set; } = new List<ContentStructure>();
         [DataMember] public List<ContentWildCreature> WildCreatures { get; set; } = new List<ContentWildCreature>();
         [DataMember] public List<ContentTribe> Tribes { get; set; } = new List<ContentTribe>();
@@ -66,6 +59,7 @@ namespace ASVPack.Models
 
 
         private int profileDayLimit = 30;
+        private int maxCoresCached = (int)(Environment.ProcessorCount * (0.75));
 
         private bool isLoaded = false;
         public bool IsLoaded()
@@ -99,16 +93,29 @@ namespace ASVPack.Models
             if(fileInfo.Length > int.MaxValue)
             {
                 // >2GB limit for MemoryStream, return as FileStream instead.
-                return File.OpenRead(filename);
+                return new FileStream(filename, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
             }
 
-            return new MemoryStream(File.ReadAllBytes(filename));
-            
+            byte[] fileContentBytes;
+            using(FileStream s = new FileStream(filename, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                using(BinaryReader r = new BinaryReader(s))
+                {
+                    fileContentBytes = r.ReadAllBytes();
+                }
+            }
+
+            return new MemoryStream(fileContentBytes);            
         }
 
 
-        public void LoadSaveGame(string saveFilename, string localProfileFilename, string clusterFolder, int profileDayCountLimit=30)
+        public void LoadSaveGame(string saveFilename, string localProfileFilename, string clusterFolder, int profileDayCountLimit=30, int maxCores = -1)
         {
+            if (maxCores <= 0)
+            {
+                maxCores = (int)(Environment.ProcessorCount * (0.75));
+            }
+            maxCoresCached = maxCores;
 
             if (saveFilename.ToLowerInvariant().EndsWith(".gz"))
             {
@@ -155,11 +162,6 @@ namespace ASVPack.Models
                 throw new FileNotFoundException();
             }
 
-            if(File.GetLastWriteTimeUtc(saveFilename) <= loadedTimestamp) 
-            {
-                return;
-            }
-
             ContentMap? selectedMap = null;
 
             loadedTimestamp = File.GetLastWriteTimeUtc(saveFilename);
@@ -201,7 +203,8 @@ namespace ASVPack.Models
                 List<ContentTribe> tribeContentList = new List<ContentTribe>();
 
                 var fileInf = new FileInfo(saveFilename);
-                GameSaveTime = fileInf.LastWriteTimeUtc.ToLocalTime();
+                
+                GameSaveTime = fileInf.LastWriteTime;
                 fileInf = null;
 
                 logWriter.Debug($"Reading game save data: {saveFilename}");
@@ -221,7 +224,7 @@ namespace ASVPack.Models
                 if (dbTestString.StartsWith("sqlite", StringComparison.InvariantCultureIgnoreCase))
                 {
                     //Ark Survival Ascended
-                    LoadArkAscendedData(saveFilename);
+                    LoadArkAscendedData(saveFilename, maxCores);
                     
                 }
                 else
@@ -240,16 +243,17 @@ namespace ASVPack.Models
                     {
                         foreach (var missingPlayer in missingPlayers)
                         {
-                            tribe.Players.Add(new ContentPlayer()
+                            if (!Tribes.Any(t => t.Players.Any(p => p.Id == missingPlayer.Key)))
                             {
-                                Id = missingPlayer.Key,
-                                CharacterName = missingPlayer.Value,
-                                Name = missingPlayer.Value
-                            });
+                                tribe.Players.Add(new ContentPlayer()
+                                {
+                                    Id = missingPlayer.Key,
+                                    CharacterName = missingPlayer.Value,
+                                    Name = missingPlayer.Value
+                                });
+                            }
                         }
                     }
-
-
                 }
 
 
@@ -259,8 +263,10 @@ namespace ASVPack.Models
 
                     OnUpdateProgress?.Invoke("Loading cluster data...");
                     logWriter.Info("Reading cluster data...");
-                    var profileFilenames = Directory.GetFiles(clusterFolder, "*");
-                    profileFilenames.AsParallel().ForAll(fileName =>
+                    var profileFilenames = Directory.EnumerateFiles(clusterFolder, "*");
+
+                    Parallel.ForEach(profileFilenames, new ParallelOptions() { MaxDegreeOfParallelism = maxCores}, fileName =>
+                    //profileFilenames.AsParallel().ForAll(fileName =>
                     {
                         long itemOwnerId = 0;
                         long.TryParse(System.IO.Path.GetFileNameWithoutExtension(fileName), out itemOwnerId);
@@ -384,6 +390,8 @@ namespace ASVPack.Models
                                                             }
 
 
+                                              
+
                                                             var targetTribe = Tribes.FirstOrDefault(t => t.TribeId == tamedDino.TargetingTeam);
                                                             if (targetTribe == null)
                                                             {
@@ -411,11 +419,9 @@ namespace ASVPack.Models
                                                             }
                                                             if (targetTribe != null)
                                                             {
+                                                                tamedDino.TribeName = targetTribe.TribeName;
                                                                 targetTribe.Tames.Add(tamedDino);
-                                                                if (string.IsNullOrEmpty(tamedDino.TribeName))
-                                                                {
-                                                                    tamedDino.TribeName = targetTribe.TribeName;
-                                                                }
+
                                                             }
 
 
@@ -505,6 +511,8 @@ namespace ASVPack.Models
                         GameSeconds = arkSavegame.GameTime;
                     }
                     OnUpdateProgress?.Invoke("ARK save file loaded, analysing and parsing data...");
+
+
 
 
 
@@ -602,16 +610,6 @@ namespace ASVPack.Models
                         }
                     }
 
-
-
-
-
-
-
-
-
-
-
                     var filePath = Path.GetDirectoryName(saveFilename) ?? "";
                     ConcurrentBag<ContentPlayer> fileProfiles = new ConcurrentBag<ContentPlayer>();
 
@@ -623,8 +621,9 @@ namespace ASVPack.Models
                         long profileStart = DateTime.Now.Ticks;
                         logWriter.Info("Reading .arkprofile(s)");
 
-                        var profileFilenames = Directory.GetFiles(filePath, "*.arkprofile");
-                        profileFilenames.AsParallel().ForAll(x =>
+                        var profileFilenames = Directory.EnumerateFiles(filePath, "*.arkprofile");
+                        Parallel.ForEach(profileFilenames, new ParallelOptions() { MaxDegreeOfParallelism = maxCoresCached}, x =>
+                        //profileFilenames.AsParallel().ForAll(x =>
                         {
                             try
                             {
@@ -705,8 +704,10 @@ namespace ASVPack.Models
                     logWriter.Info("Reading .arktribe(s)");
 
                     OnUpdateProgress?.Invoke("Started loading .arktribe data...");
-                    var tribeFilenames = Directory.GetFiles(filePath, "*.arktribe");
-                    tribeFilenames.AsParallel().ForAll(x =>
+                    var tribeFilenames = Directory.EnumerateFiles(filePath, "*.arktribe");
+
+                    Parallel.ForEach(tribeFilenames, new ParallelOptions() { MaxDegreeOfParallelism = maxCoresCached}, x =>
+                    //tribeFilenames.AsParallel().ForAll(x =>
                     {
                         try
                         {
@@ -755,10 +756,20 @@ namespace ASVPack.Models
                     logWriter.Info($"Allocating players to tribes");
 
                     //allocate players to tribes
-                    fileProfiles.AsParallel().ForAll(p =>
+
+                    foreach (var p in fileProfiles)
                     {
+
+           
                         var playerTribe = fileTribes.FirstOrDefault(t => t.TribeId == (long)p.TargetingTeam);
                         if (playerTribe == null)
+                        {
+                            playerTribe = fileTribes.FirstOrDefault(t => t.Members.Any(x => x.Key == p.Id));
+                        }
+                        var soloTribe = fileTribes.FirstOrDefault(t => t.TribeId == (long)p.Id);
+
+
+                        if (playerTribe == null && soloTribe == null)
                         {
                             playerTribe = new ContentTribe()
                             {
@@ -771,10 +782,55 @@ namespace ASVPack.Models
                             fileTribes.Add(playerTribe);
                         }
 
-
                         playerTribe.Players.Add(p);
-                    });
+                    }
+
+                    //var test = fileTribes.Where(t => t.Players.Any(p => p.NetworkId == "2535459452569590")).ToList();
+
+
+
+                    /*
+                    Parallel.ForEach(fileProfiles, new ParallelOptions() { MaxDegreeOfParallelism = maxCoresCached}, p =>
+                    //fileProfiles.AsParallel().ForAll(p =>
+                    //foreach(var p in fileProfiles)
+                    {
+                        var playerTribe = fileTribes.FirstOrDefault(t => t.TribeId == (long)p.TargetingTeam);
+
+                        if (playerTribe != null)
+                        {
+                            if (playerTribe.Members.ContainsKey((int)p.Id))
+                            {
+                                playerTribe.Players.Add(p);
+                            }
+                            else
+                            {
+                                p.TargetingTeam = (int)p.Id; //must have left tribe, put in own tribe
+                                playerTribe = null;
+                            }
+                        }
+
+                        if (playerTribe == null)
+                        {
+                            playerTribe = new ContentTribe()
+                            {
+                                IsSolo = true,
+                                HasGameFile = false,
+                                TribeId = p.Id,
+                                TribeName = $"Tribe of {p.CharacterName}"
+                            };
+                            playerTribe.Members.Add((int)p.Id, p.CharacterName);
+                            playerTribe.Players.Add(p);
+                            fileTribes.Add(playerTribe);
+                        }
+
+
+
+
+                    }
+                    );
+                    */
                     long allocationEnd = DateTime.Now.Ticks;
+
 
 
                     long structureStart = DateTime.Now.Ticks;
@@ -788,7 +844,7 @@ namespace ASVPack.Models
                         && x.GetPropertyValue<int?>("TargetingTeam") == null
                         && (x.ClassString.StartsWith("TributeTerminal_")
                         || x.ClassString.Contains("CityTerminal_")
-                        || x.ClassString.StartsWith("PrimalItem_PowerNodeCharge")
+                        || x.ClassString.StartsWith("PowerNodeCharge")
                         || x.ClassString.StartsWith("BeaverDam_C")
                         || x.ClassString.StartsWith("WyvernNest_")
                         || x.ClassString.StartsWith("RockDrakeNest_C")
@@ -867,7 +923,7 @@ namespace ASVPack.Models
                             if (s.ClassName.Name.Contains("Nest"))
                             {
                                 logWriter.Debug($"Finding nearby eggs for: {s.ClassString}");
-                                var eggInRange = objectContainer.Objects.FirstOrDefault(x =>
+                                var eggInRange = objectContainer.Objects.Find(x =>
                                     x.ClassName.Name.Contains("Egg")
                                     && x.Location != null
                                     && (((x.Location.X > s.Location.X) ? x.Location.X - s.Location.X : s.Location.X - x.Location.X) < 1500)
@@ -895,6 +951,9 @@ namespace ASVPack.Models
                         return structure;
                     }).Where(s => s != null).ToList();
 
+                    var nests = MapStructures.Where(m => m.ClassName.ToLower().Contains("nest")).ToList();
+
+
                     long structureEnd = DateTime.Now.Ticks;
                     var structureTime = TimeSpan.FromTicks(structureEnd - structureStart);
                     logWriter.Info($"Structures loaded in: {structureTime.ToString(@"mm\:ss")}.");
@@ -906,7 +965,9 @@ namespace ASVPack.Models
 
                     logWriter.Info($"Identifying wild creatures");
                     //wilds
-                    WildCreatures = objectContainer.Objects.AsParallel().Where(x => x.IsWild())
+
+                    //Parallel.ForEach(objectContainer.Objects.Where(x=>x.IsWild()), x=>
+                    WildCreatures = objectContainer.Objects.AsParallel().WithDegreeOfParallelism(maxCoresCached).Where(x => x.IsWild())
                         .Select(x =>
                         {
                             logWriter.Debug($"Determining character status for: {x.ClassString}");
@@ -962,7 +1023,7 @@ namespace ASVPack.Models
                         }).Where(x => x !=null).Distinct().ToList();
 
 
-
+                    
                     long wildEnd = DateTime.Now.Ticks;
                     var wildTime = TimeSpan.FromTicks(wildEnd - wildStart);
                     logWriter.Info($"Wilds loaded in: {wildTime.ToString(@"mm\:ss")}.");
@@ -1030,10 +1091,12 @@ namespace ASVPack.Models
 
                     logWriter.Debug($"Identifying in-game players with no .arkprofile");
 
+                    /*
                     var abandonedGamePlayers = tribesAndPlayers.Where(x => !fileTribes.Any(t => t.TribeId == (long)x.Key) & !fileProfiles.Any(p => p.Id == (long)x.Key)).ToList();
                     if (abandonedGamePlayers != null && abandonedGamePlayers.Count > 0)
                     {
-                        abandonedGamePlayers.AsParallel().ForAll(abandonedTribe =>
+                        Parallel.ForEach(abandonedGamePlayers, new ParallelOptions() { MaxDegreeOfParallelism = maxCoresCached}, abandonedTribe =>
+                        //abandonedGamePlayers.AsParallel().ForAll(abandonedTribe =>
                         //foreach(var abandonedTribe in abandonedGamePlayers)
                         {
                             var abandonedPlayers = abandonedTribe.ToList();
@@ -1057,7 +1120,7 @@ namespace ASVPack.Models
                         }
                         );
                     }
-
+                    */
 
 
                     logWriter.Debug($"Identifying in-game missing tribes from player structures");
@@ -1120,16 +1183,18 @@ namespace ASVPack.Models
                     logWriter.Debug($"Populating player data");
                     //load inventories, locations etc.
 
-                    fileTribes.Where(x => x.Players.Count > 0).AsParallel().ForAll(fileTribe =>
+                    Parallel.ForEach(fileTribes.Where(x => x.Players.Count > 0), new ParallelOptions() { MaxDegreeOfParallelism  = maxCoresCached},  fileTribe =>
+                    //fileTribes.AsParallel().Where(x => x.Players.Count > 0).ForAll(fileTribe =>
                     //foreach(var fileTribe in fileTribes.Where(x=>x.Players.Count > 0))
                     {
                         var tribePlayers = fileTribe.Players;
 
-                        tribePlayers.AsParallel().ForAll(player =>
+                        Parallel.ForEach(tribePlayers, new ParallelOptions() {MaxDegreeOfParallelism = maxCoresCached }, player =>
+                        //tribePlayers.AsParallel().ForAll(player =>
                         //foreach (var player in tribePlayers)
                         {
 
-                            GameObject? arkPlayer = gamePlayers.FirstOrDefault(x => x.GetPropertyValue<long>("LinkedPlayerDataID") == player.Id);
+                            GameObject? arkPlayer = gamePlayers.Find(x => x.GetPropertyValue<long>("LinkedPlayerDataID") == player.Id);
 
                             if (arkPlayer != null)
                             {
@@ -1153,6 +1218,8 @@ namespace ASVPack.Models
                                 logWriter.Debug($"Retrieving player inventory: {player.Id} - {player.CharacterName}");
                                 if (arkPlayer.GetPropertyValue<ObjectReference>("MyInventoryComponent") != null)
                                 {
+                                   
+
                                     int inventoryRefId = arkPlayer.GetPropertyValue<ObjectReference>("MyInventoryComponent").ObjectId;
                                     objectContainer.TryGetValue(inventoryRefId, out GameObject inventoryComponent);
                                     ConcurrentBag<ContentItem> inventoryItems = new ConcurrentBag<ContentItem>();
@@ -1205,8 +1272,6 @@ namespace ASVPack.Models
 
                                     }
 
-
-
                                     player.Inventory = new ContentInventory() { Items = inventoryItems.ToList() };
 
                                 }
@@ -1223,17 +1288,14 @@ namespace ASVPack.Models
                     logWriter.Info($"Tribe players loaded in: {tribeLoadTime.ToString(@"mm\:ss")}.");
 
 
-
-
-
-
-
-
+                    
                     logWriter.Debug($"Populating tamed creature inventories");
 
 
                     OnUpdateProgress?.Invoke("Parsing tame data...");
-                    Parallel.ForEach(allTames.SelectMany(x => x.Tames), x =>
+
+                    Parallel.ForEach(allTames.SelectMany(x=>x.Tames), new ParallelOptions() { MaxDegreeOfParallelism = maxCoresCached},  x =>
+                    //allTames.AsParallel().SelectMany(x => x.Tames).ForAll(x =>
                     {
                         //find appropriate tribe to add to
                         var teamId = x.GetPropertyValue<int>("TargetingTeam");
@@ -1373,7 +1435,7 @@ namespace ASVPack.Models
                     var unclaimedBabies = unclaimedTribe.Tames.Where(x => x.IsBaby).ToList();
                     if (unclaimedBabies != null && unclaimedBabies.Count > 0)
                     {
-                        Parallel.ForEach(unclaimedBabies, baby =>
+                        Parallel.ForEach(unclaimedBabies, new ParallelOptions() { MaxDegreeOfParallelism = maxCoresCached}, baby =>
                         {
                             if (baby.MotherId.HasValue)
                             {
@@ -1407,7 +1469,7 @@ namespace ASVPack.Models
                     logWriter.Debug($"Populating player structure inventories");
 
                     var allTribeStructures = tribeStructures.SelectMany(x => x.Structures);
-                    Parallel.ForEach(allTribeStructures, x =>
+                    Parallel.ForEach(allTribeStructures, new ParallelOptions() { MaxDegreeOfParallelism = maxCoresCached}, x =>
                     {
 
                         var teamId = x.GetPropertyValue<int>("TargetingTeam");
@@ -1471,7 +1533,7 @@ namespace ASVPack.Models
                                 {
                                     ArkArrayObjectReference objectReferences = (ArkArrayObjectReference)inventoryItemsArray.Value;
 
-                                    Parallel.ForEach(objectReferences, objectReference =>
+                                    Parallel.ForEach(objectReferences, new ParallelOptions() { MaxDegreeOfParallelism = maxCoresCached}, objectReference =>
                                     {
                                         objectContainer.TryGetValue(objectReference.ObjectId, out GameObject itemObject);
                                         if (itemObject != null)
@@ -1491,7 +1553,7 @@ namespace ASVPack.Models
                                 if (equippedItemsArray != null)
                                 {
                                     ArkArrayObjectReference objectReferences = (ArkArrayObjectReference)equippedItemsArray.Value;
-                                    Parallel.ForEach(objectReferences, objectReference =>
+                                    Parallel.ForEach(objectReferences, new ParallelOptions() { MaxDegreeOfParallelism = maxCoresCached}, objectReference =>
                                     {
                                         objectContainer.TryGetValue(objectReference.ObjectId, out GameObject itemObject);
                                         if (itemObject != null)
@@ -1575,7 +1637,7 @@ namespace ASVPack.Models
                                 {
                                     ArkArrayObjectReference objectReferences = (ArkArrayObjectReference)inventoryItemsArray.Value;
 
-                                    Parallel.ForEach(objectReferences, objectReference =>
+                                    Parallel.ForEach(objectReferences, new ParallelOptions() { MaxDegreeOfParallelism =maxCoresCached }, objectReference =>
                                     {
                                         objectContainer.TryGetValue(objectReference.ObjectId, out GameObject itemObject);
                                         if (itemObject != null)
@@ -1599,7 +1661,7 @@ namespace ASVPack.Models
                                     if (equippedItemArray != null)
                                     {
                                         ArkArrayObjectReference equippedReferences = (ArkArrayObjectReference)equippedItemArray.Value;
-                                        Parallel.ForEach(equippedReferences, objectReference =>
+                                        Parallel.ForEach(equippedReferences, new ParallelOptions() { MaxDegreeOfParallelism = maxCoresCached},  objectReference =>
                                         {
                                             objectContainer.TryGetValue(objectReference.ObjectId, out GameObject itemObject);
                                             if (itemObject != null)
@@ -1656,7 +1718,7 @@ namespace ASVPack.Models
                                     {
                                         ArkArrayObjectReference objectReferences = (ArkArrayObjectReference)inventoryItemsArray.Value;
 
-                                        Parallel.ForEach(objectReferences, objectReference =>
+                                        Parallel.ForEach(objectReferences, new ParallelOptions() { MaxDegreeOfParallelism = maxCoresCached}, objectReference =>
                                         {
                                             objectContainer.TryGetValue(objectReference.ObjectId, out GameObject itemObject);
                                             if (itemObject != null)
@@ -1684,7 +1746,7 @@ namespace ASVPack.Models
                                     if (inventoryItemsArray != null)
                                     {
                                         ArkArrayObjectReference objectReferences = (ArkArrayObjectReference)inventoryItemsArray.Value;
-                                        Parallel.ForEach(objectReferences, objectReference =>
+                                        Parallel.ForEach(objectReferences, new ParallelOptions() { MaxDegreeOfParallelism = maxCoresCached}, objectReference =>
                                         {
                                             objectContainer.TryGetValue(objectReference.ObjectId, out GameObject itemObject);
                                             if (itemObject != null)
@@ -1780,39 +1842,61 @@ namespace ASVPack.Models
                     }
                 }
             }
+
             return contentPlayer;
         }
 
-        private void LoadArkAscendedData(string saveFilename)
+        private void LoadArkAscendedData(string saveFilename, int maxCores)
         {
+
+
             long startTicks = DateTime.Now.Ticks;
 
             //load data
             OnUpdateProgress?.Invoke("Loading ARK save file...");
             AsaSavegame arkSavegame = new AsaSavegame();
-            arkSavegame.Read(saveFilename);
+            arkSavegame.Read(saveFilename, maxCores);
             OnUpdateProgress?.Invoke("ARK save file loaded. Analysing and parsing data...");
 
+        
             long endTicks = DateTime.Now.Ticks;
             TimeSpan timeTaken = TimeSpan.FromTicks(endTicks - startTicks);
             logWriter.Info($"Game data loaded in: {timeTaken.ToString(@"mm\:ss")}.");
 
-            var pods = arkSavegame.Objects.Where(o => o.ClassString == "PrimalItem_WeaponEmptyCryopod_C").ToList();
-
-
+            
             //determine map
             MapName = arkSavegame.DataFiles[0];
             var selectedMap = mapPack.GetMap($"{MapName}.ark");
-            if (selectedMap == null) return;           
-            LoadedMap = selectedMap;
+
+            if (selectedMap != null)
+            {
+                LoadedMap = selectedMap;
+                logWriter.Debug($"Map location data loaded for: {selectedMap.MapName}");
+            }
+            else
+            {
+                logWriter.Debug($"Failed to load location data for: {MapName}.ark");
+                return;
+            }
+
+            var gameDayCycle = arkSavegame.Objects.FirstOrDefault(o => o.ClassString.Contains("daycycle", StringComparison.CurrentCultureIgnoreCase));
+            if (gameDayCycle != null)
+            {
+                MapDay = 1;
+                var mapTimeEpoch = gameDayCycle.GetPropertyValue<float>("CurrentTime", 0, 0);
+                MapTime = DateTime.UnixEpoch.AddSeconds(mapTimeEpoch);
+
+                if (gameDayCycle.HasAnyProperty("theDayNumberToMakeSerilizationWork"))
+                {
+                    MapDay = gameDayCycle.GetPropertyValue<int>("theDayNumberToMakeSerilizationWork", 0, 1);
+                }
+            }
 
             //read game time and file datetime
             FileInfo fileInfo = new FileInfo(saveFilename);
-            DateTime fileTimestamp =  fileInfo.LastWriteTimeUtc;
+            DateTime fileTimestamp =  fileInfo.LastWriteTime;
             GameSeconds = (float)arkSavegame.GameTime;
-            GameSaveTime = fileTimestamp.ToUniversalTime();
-
-
+            GameSaveTime = fileTimestamp;
 
             //parse tribes
             OnUpdateProgress?.Invoke("ARK save file loaded. Parsing Tribes...");
@@ -1830,20 +1914,34 @@ namespace ASVPack.Models
                 TribeId = int.MinValue,
                 TribeName = "[ASV Abandoned]"
             });
-            arkSavegame.Tribes.AsParallel().ForAll(tribe =>
+
+            ConcurrentBag<ContentTribe> tribeList = new ConcurrentBag<ContentTribe>();
+
+            Parallel.ForEach(arkSavegame.Tribes, new ParallelOptions { MaxDegreeOfParallelism = maxCores }, tribe =>
+            //arkSavegame.Tribes.AsParallel().ForAll(tribe =>
             {
                 var contentTribe = tribe.Tribe.AsTribe();
-                if (contentTribe != null) fileTribes.Add(contentTribe);
+                contentTribe.TribeFileDate = tribe.TribeFileTimestamp.ToLocalTime();
+                if (contentTribe != null)
+                {
+                    tribeList.Add(contentTribe);
+                }                    
             });
 
+            foreach (var tribe in tribeList.OrderByDescending(o => o.TribeFileDate))
+            {
+                if(!fileTribes.Any(f=>f.TribeId == tribe.TribeId))
+                {
+                    fileTribes.Add(tribe);
+                }
+            }
 
             startTicks = DateTime.Now.Ticks;
 
             //parse profiles
             OnUpdateProgress?.Invoke("ARK save file loaded. Parsing Profiles...");
             ConcurrentBag<ContentPlayer> fileProfiles = new ConcurrentBag<ContentPlayer>();
-            Parallel.ForEach(arkSavegame.Profiles, profile =>
-            //foreach(var profile in arkSavegame.Profiles) 
+            Parallel.ForEach(arkSavegame.Profiles, new ParallelOptions() { MaxDegreeOfParallelism = maxCores }, profile=>
             {
                 //parse into ContentPlayer and add to list
                 var playerProfile = profile?.Profile;
@@ -1851,6 +1949,8 @@ namespace ASVPack.Models
 
                 if (contentPlayer != null)
                 {
+    
+
                     if (playerProfile?.Location != null)
                     {
                         float latitude = (float)LoadedMap.LatShift + ((float)playerProfile?.Location.Y / (float)LoadedMap.LatDiv);
@@ -1862,19 +1962,30 @@ namespace ASVPack.Models
                 }
             }
             );
+
+
+
             endTicks = DateTime.Now.Ticks;
             timeTaken = TimeSpan.FromTicks(endTicks - startTicks);
             logWriter.Info($"Profile data loaded in: {timeTaken.ToString(@"mm\:ss")}.");
 
+            
+
             startTicks = DateTime.Now.Ticks;
             OnUpdateProgress?.Invoke("ARK save file loaded. Allocating Tribe Players...");
             //allocate players to tribes
-            foreach (var p in fileProfiles)
-            {
-                var playerTribe = fileTribes.FirstOrDefault(t => t.TribeId == (long)p.TargetingTeam || t.Members.Any(x=> x.Key == p.Id));
+            //foreach (var p in fileProfiles)
+           
+            Parallel.ForEach(fileProfiles, new ParallelOptions() { MaxDegreeOfParallelism = maxCores }, p =>
+            { 
+                var playerTribe = fileTribes.FirstOrDefault(t => t.TribeId == (long)p.TargetingTeam);
+                if (playerTribe == null)
+                {
+                    playerTribe = fileTribes.FirstOrDefault(t => t.Members.Any(x => x.Key == p.Id));
+                }                
                 var soloTribe = fileTribes.FirstOrDefault(t => t.TribeId == (long)p.Id);
 
-                if (playerTribe == null && soloTribe==null)
+                if (playerTribe == null)
                 {
                     playerTribe = new ContentTribe()
                     {
@@ -1889,32 +2000,40 @@ namespace ASVPack.Models
 
                 playerTribe.Players.Add(p);
             }
-            //);
+            );
+            
+            
+
             endTicks = DateTime.Now.Ticks;
             timeTaken = TimeSpan.FromTicks(endTicks - startTicks);
-            logWriter.Info($"Allocated player tribes in: {timeTaken.ToString(@"mm\:ss")}.");
 
+            //var drakeNests = arkSavegame.Objects.Where(o => o.ClassString.ToLower().Contains("rockdrakenest_c")).ToList();
+
+
+            logWriter.Info($"Allocated player tribes in: {timeTaken.ToString(@"mm\:ss")}.");
 
             startTicks = DateTime.Now.Ticks;
             OnUpdateProgress?.Invoke("ARK save file loaded. Parsing Map Structures...");
-            //parse structures
+
+            //parse structures         
             var mapStructures = arkSavegame.Objects.Where(x =>
                         x.Location != null
                         && x.GetPropertyValue<int?>("TargetingTeam") == null
-                        && (x.ClassString.StartsWith("TributeTerminal_")
-                        || x.ClassString.Contains("CityTerminal_")
-                        || x.ClassString.StartsWith("PrimalItem_PowerNodeCharge")
-                        || x.ClassString.StartsWith("BeaverDam_C")
-                        || x.ClassString.StartsWith("WyvernNest_")
-                        || x.ClassString.StartsWith("RockDrakeNest_C")
-                        || x.ClassString.StartsWith("DeinonychusNest_C")
-                        || x.ClassString.StartsWith("CherufeNest_C")
-                        || x.ClassString.StartsWith("OilVein_")
-                        || x.ClassString.StartsWith("WaterVein_")
-                        || x.ClassString.StartsWith("GasVein_")
-                        || x.ClassString.StartsWith("ArtifactCrate_")
-                        || x.ClassString.StartsWith("Structure_PlantSpeciesZ")
-                        || x.ClassString.StartsWith("BeeHive_C")
+                        && (
+                        x.ClassString.StartsWith("TributeTerminal_")
+                            || x.ClassString.Contains("CityTerminal_")
+                            || x.ClassString.Equals("PrimalStructurePowerNode_C")
+                            || x.ClassString.StartsWith("BeaverDam_C")
+                            || x.ClassString.StartsWith("WyvernNest_")
+                            || x.ClassString.StartsWith("RockDrakeNest_C")
+                            || x.ClassString.StartsWith("DeinonychusNest_C")
+                            || x.ClassString.StartsWith("CherufeNest_C")
+                            || x.ClassString.StartsWith("OilVein_")
+                            || x.ClassString.StartsWith("WaterVein_")
+                            || x.ClassString.StartsWith("GasVein_")
+                            || x.ClassString.StartsWith("ArtifactCrate_")
+                            || x.ClassString.StartsWith("Structure_PlantSpeciesZ")
+                            || x.ClassString.StartsWith("BeeHive_C")
                         )
                     ).Select(s =>
                     {
@@ -1922,6 +2041,7 @@ namespace ASVPack.Models
                         
                         if (structure != null)
                         {
+
                             if (s.Location != null)
                             {
                                 float latitude = (float)LoadedMap.LatShift + ((float)s.Location.Y / (float)LoadedMap.LatDiv);
@@ -1929,6 +2049,7 @@ namespace ASVPack.Models
                                 structure.Latitude = latitude;
                                 structure.Longitude = longitude;
                             }
+     
 
                             structure.CreatedDateTime = GetApproxDateTimeOf(structure.CreatedTimeInGame);
                             structure.Latitude = (float)LoadedMap.LatShift + (structure.Y / (float)LoadedMap.LatDiv);
@@ -1940,18 +2061,18 @@ namespace ASVPack.Models
                             AsaObjectReference? paintingRef = s.GetPropertyValue<AsaObjectReference?>("PaintingComponent", 0, null);
                             if (paintingRef != null)
                             {
-                                paintingComponent = arkSavegame.Objects.First(o => o.Guid.ToString() == paintingRef.Value);
-                                structure.UniquePaintingId = paintingComponent.GetPropertyValue<int>("UniquePaintingId", 0, 0);
+                                paintingComponent = arkSavegame.Objects.FirstOrDefault(o => o.Guid.ToString() == paintingRef.Value);
+                                if(paintingComponent!=null)
+                                    structure.UniquePaintingId = paintingComponent.GetPropertyValue<int>("UniquePaintingId", 0, 0);
                             }
 
+                            structure.Inventory = new ContentInventory();
 
                             AsaGameObject inventoryComponent = null;
                             AsaObjectReference? inventoryRef = s.GetPropertyValue<AsaObjectReference?>("MyInventoryComponent", 0, null);
                             if (inventoryRef != null)
                             {
-                                inventoryComponent = arkSavegame.Objects.First(o => o.Guid.ToString() == inventoryRef.Value);
-                                
-                                structure.Inventory = new ContentInventory();
+                                inventoryComponent = arkSavegame.Objects.FirstOrDefault(o => o.Guid.ToString() == inventoryRef.Value);
 
                                 if (inventoryComponent != null)
                                 {
@@ -1968,47 +2089,63 @@ namespace ASVPack.Models
                                                 
                                                 var item = itemObject.AsItem();
 
+
                                                 if (!item.IsEngram & !item.IsBlueprint)
                                                 {
-
-                                                    inventoryItems.Add(item);
+                                                    if(item.ClassName != "PrimalItem_PowerNodeCharge_C")
+                                                        inventoryItems.Add(item);
                                                 }
                                                 
                                             }
                                         };
                                      
                                     }
-
                                 }
-                                else
+                            }
+                            else
+                            {
+                                //check for eggs *near* nests
+                                if (s.ClassString.Contains("nest", StringComparison.CurrentCultureIgnoreCase))
                                 {
-                                    //check for eggs *near* nests
-                                    if (s.ClassName.Name.Contains("Nest"))
-                                    {
-                                        var eggInRange = arkSavegame.Objects.FirstOrDefault(x =>
-                                            x.ClassName.Name.Contains("Egg")
-                                            && x.Location != null
-                                            && (((x.Location.X > s.Location.X) ? x.Location.X - s.Location.X : s.Location.X - x.Location.X) < 1500)
-                                            && (((x.Location.Z > s.Location.Z) ? x.Location.Z - s.Location.Z : s.Location.Z - x.Location.Z) < 1500)
-                                        );
+                                    var eggInRange = arkSavegame.Objects.FirstOrDefault(x =>
+                                        x.ClassString.Contains("egg", StringComparison.CurrentCultureIgnoreCase)
+                                        && x.Location != null
+                                        && Math.Abs((x.Location.X > s.Location.X) ? x.Location.X - s.Location.X : s.Location.X - x.Location.X) < 100
+                                        && Math.Abs((x.Location.Y > s.Location.Y) ? x.Location.Y - s.Location.Y : s.Location.Y - x.Location.Y) < 100
+                                    );
 
-                                        if (eggInRange != null)
+                                    if (eggInRange != null)
+                                    {
+                                        AsaObjectReference? itemRef = eggInRange.GetPropertyValue<AsaObjectReference?>("MyItem", 0, null);
+                                        if (itemRef != null)
                                         {
-                                            inventoryItems.Add(new ContentItem()
+                                            var itemId = Guid.Parse(itemRef.Value);
+                                            var itemObj = arkSavegame.GetObjectByGuid(itemId);
+                                            if (itemObj != null)
                                             {
-                                                ClassName = eggInRange.ClassString,
-                                                CustomName = eggInRange.GetPropertyValue<string>("DroppedByName", 0, "")??"",
-                                                Quantity = 1
-                                            });
+                                                ContentItem eggItem = new ContentItem()
+                                                {
+                                                    ClassName = itemObj.ClassString,
+                                                    Quantity = 1
+                                                };
+
+                                                string customName = itemObj.GetPropertyValue<string?>("CustomItemDescription", 0, "") ?? "";
+                                                customName = customName.Replace("\n", " / ");
+                                                customName = customName.Replace("Parents: /", "");
+                                                eggItem.CustomName = customName;
+                                                
+                                                
+                                              
+
+                                                inventoryItems.Add(eggItem);
+                                            }
                                         }
                                     }
-
                                 }
-
-
-                                if (inventoryItems.Count > 0) structure.Inventory.Items.AddRange(inventoryItems.ToArray());
-
                             }
+
+                            if (inventoryItems.Count > 0) structure.Inventory.Items.AddRange(inventoryItems.ToArray());
+
 
                             return structure;
                         }
@@ -2017,6 +2154,8 @@ namespace ASVPack.Models
                         
                     }).Where(s=>!string.IsNullOrEmpty(s.ClassName)).ToList<ContentStructure>();
 
+            
+
             MapStructures = new List<ContentStructure>();
             if(mapStructures!=null && mapStructures.Count > 0)
             {
@@ -2024,6 +2163,8 @@ namespace ASVPack.Models
                 mapStructures.Clear(); //no longer needed
             }
 
+
+            
             endTicks = DateTime.Now.Ticks;
             timeTaken = TimeSpan.FromTicks(endTicks - startTicks);
             logWriter.Info($"Map structures parsed in: {timeTaken.ToString(@"mm\:ss")}.");
@@ -2035,9 +2176,14 @@ namespace ASVPack.Models
             WildCreatures = new List<ContentWildCreature>();
             
             ConcurrentBag<ContentWildCreature> wildBag = new ConcurrentBag<ContentWildCreature>();
-            arkSavegame.Objects.AsParallel().Where(x => x.IsWild()).ForAll(x=>           
+
+            Parallel.ForEach(arkSavegame.Objects.Where(x=>x.IsWild()), new ParallelOptions { MaxDegreeOfParallelism = maxCores }, x =>
+            //arkSavegame.Objects.AsParallel().Where(x => x.IsWild()).ForAll(x=>              
+            //foreach(var x in arkSavegame.Objects.Where(o => o.IsWild()))
             {
+
                 AsaObjectReference? statusCompRef = x.GetPropertyValue<AsaObjectReference?>("MyCharacterStatusComponent", 0, null) ?? x.GetPropertyValue<AsaObjectReference?>("MyDinoStatusComponent", 0, null);
+                
                 if (statusCompRef != null)
                 {
                     Guid refGuid = Guid.Parse(statusCompRef.Value);
@@ -2065,6 +2211,7 @@ namespace ASVPack.Models
                 WildCreatures.AddRange(wildBag);
             }
             wildBag.Clear();//no longer needed
+
             
             endTicks = DateTime.Now.Ticks;
             timeTaken = TimeSpan.FromTicks(endTicks - startTicks);
@@ -2077,7 +2224,30 @@ namespace ASVPack.Models
                 .Where(x => x.IsTamed()) 
                 .GroupBy(x => (long)x.GetPropertyValue<int>("TargetingTeam")).Select(x => new { TribeId = x.Key, TribeName = x.First().GetPropertyValue<string>("TribeName") ?? x.First().GetPropertyValue<string>("TamerString"), Tames = x.ToList() }).ToList();
 
+            /*
+            var embyros = arkSavegame.Objects.Where(o => o.ClassString == "PrimalItemConsumable_Embryo_Base_C").ToList();
+            foreach (var embryo in embyros)
+            {
+                AsaObjectReference? ownerInventoryRef = embryo.Properties.First(p => p.Name == "OwnerInventory")?.Value;
+                if (ownerInventoryRef != null)
+                {
+                    var ownerInventory = arkSavegame.GetObjectByGuid(Guid.Parse(ownerInventoryRef.Value));
+                    if (ownerInventory == null) continue;
+                    if (ownerInventory.Names.Count == 0) continue;
 
+                    AsaGameObject? ownerContainer = arkSavegame.Objects.First(o => o.Names[0] == ownerInventory.Names[1]);
+                    if(ownerContainer==null) continue;
+
+                    
+                    var embryoCreature = new ContentTamedEmbryo(ownerContainer, embryo);
+
+
+
+                }
+
+            }
+
+            */
 
 
             //parse player structures
@@ -2091,28 +2261,26 @@ namespace ASVPack.Models
                                         .ToList();
 
 
-
-            var abandonedStructures = allStructures.Where(x => x.GetPropertyValue<int>("TargetingTeam") < 50_0000).ToList();
-            abandonedStructures.RemoveAll(s =>
-                s.ClassString.StartsWith("BeeHive_C")
-                || s.ClassString.StartsWith("ArtifactCrate_")
-                || s.ClassString.StartsWith("TributeTerminal_")
-                || s.ClassString.Contains("Button_")
-                || s.ClassString.StartsWith("SupplyCrate_")
-                || s.ClassString.Contains("Nest_")
-                || s.ClassString.Contains("Vein_")
-                || s.ClassString.Contains("Beaver")
-
+            var abandonedStructures = allStructures.AsParallel().Where(x => x.GetPropertyValue<int>("TargetingTeam") < 50_0000 &!
+                (
+                x.ClassString.StartsWith("BeeHive_C")
+                || x.ClassString.StartsWith("ArtifactCrate_")
+                || x.ClassString.StartsWith("TributeTerminal_")
+                || x.ClassString.Contains("Button_")
+                || x.ClassString.StartsWith("SupplyCrate_")
+                || x.ClassString.Contains("Nest_")
+                || x.ClassString.Contains("Vein_")
+                || x.ClassString.Contains("Beaver")
+                )
+            
             );
-
-
-
 
             var abandonedTribe = fileTribes.FirstOrDefault(t => t.TribeId == int.MinValue);
             if (abandonedTribe != null)
             {
-                abandonedStructures.ForEach(
-                    s => {
+                Parallel.ForEach(abandonedStructures, new ParallelOptions() { MaxDegreeOfParallelism = maxCores }, s =>
+                //abandonedStructures.ForAll(
+                    {
                         var structure = s.AsStructure();
                         structure.Latitude = (float)LoadedMap.LatShift + (structure.Y / (float)LoadedMap.LatDiv);
                         structure.Longitude = (float)LoadedMap.LonShift + (structure.X / (float)LoadedMap.LonDiv);
@@ -2164,7 +2332,6 @@ namespace ASVPack.Models
                 });
             }
 
-
             var gamePlayers = arkSavegame.Objects.Where(o => o.IsPlayer() & !o.HasAnyProperty("MyDeathHarvestingComponent")).GroupBy(x => x.GetPropertyValue<long>("LinkedPlayerDataID")).Select(x => x.First()).ToList();
             var playersWithNoProfile = gamePlayers.Where(p => !fileProfiles.Any(f => f.Id == (long)(p.Properties.FirstOrDefault(pp => pp.Name == "LinkedPlayerDataID")?.Value ?? 0))).ToList();
             foreach (var playerObject in playersWithNoProfile)
@@ -2198,33 +2365,47 @@ namespace ASVPack.Models
             startTicks = DateTime.Now.Ticks;
             OnUpdateProgress?.Invoke("ARK save file loaded. Parsing player data...");
             //load tribe player data
-            var tribesWithPlayers = fileTribes.Where(x => x.Players.Count > 0).ToList();
-            Parallel.ForEach(tribesWithPlayers, fileTribe =>
+            var tribesWithPlayers = fileTribes.Where(x => x.Players.Count > 0);
+            
+            //Parallel.ForEach(tribesWithPlayers, fileTribe=>
+            foreach(var fileTribe in tribesWithPlayers)
             {
                 var tribePlayers = fileTribe.Players;
 
-                Parallel.ForEach(tribePlayers, player=>
+                //Parallel.ForEach(tribePlayers, player=>
+                foreach(var player in tribePlayers)
                 {
-                    AsaGameObject? arkPlayer = gamePlayers.FirstOrDefault(x => (long)x.GetPropertyValue<ulong>("LinkedPlayerDataID") == player.Id);
+                    AsaGameObject? arkPlayer = gamePlayers.Find(x => (long)x.GetPropertyValue<ulong>("LinkedPlayerDataID") == player.Id);
 
                     if (arkPlayer != null)
                     {
                         AsaObjectReference? statusRef = arkPlayer.GetPropertyValue<AsaObjectReference?>("MyCharacterStatusComponent");
+                        if(statusRef == null)
+                        {
+                            continue;
+                        }
+
                         Guid statusId = Guid.Parse(statusRef.Value);
                         AsaGameObject? playerStatus = arkSavegame.GetObjectByGuid(statusId);
-
                         ContentPlayer contentPlayer = arkPlayer.AsPlayer(playerStatus);
 
-                        player.X = (float)arkPlayer.Location.X;
-                        player.Y = (float)arkPlayer.Location.Y;
-                        player.Z = (float)arkPlayer.Location.Z;
-                        player.Latitude = (float)LoadedMap.LatShift + (player.Y / (float)LoadedMap.LatDiv);
-                        player.Longitude = (float)LoadedMap.LonShift + (player.X / (float)LoadedMap.LonDiv);
+
+                        if (arkPlayer.Location != null)
+                        {
+                            player.X = (float)arkPlayer.Location.X;
+                            player.Y = (float)arkPlayer.Location.Y;
+                            player.Z = (float)arkPlayer.Location.Z;
+                            player.Latitude = (float)LoadedMap.LatShift + (player.Y / (float)LoadedMap.LatDiv);
+                            player.Longitude = (float)LoadedMap.LonShift + (player.X / (float)LoadedMap.LonDiv);
+
+                        }
+
                         player.LastTimeInGame = contentPlayer.LastTimeInGame;
                         player.LastActiveDateTime = GetApproxDateTimeOf(player.LastTimeInGame);
                         player.Gender = arkPlayer.ClassName.Name.Contains("Female") ? "Female" : "Male";
                         player.Level = contentPlayer.Level;
                         player.Stats = contentPlayer.Stats;
+
 
                         if (arkPlayer.GetPropertyValue<AsaObjectReference>("MyInventoryComponent") != null)
                         {
@@ -2238,8 +2419,7 @@ namespace ASVPack.Models
                                 List<dynamic>? inventoryItemsArray = inventoryComponent.GetPropertyValue<dynamic>("InventoryItems",0,null);
                                 if (inventoryItemsArray != null)
                                 {
-
-                                    Parallel.ForEach(inventoryItemsArray, objectReference =>
+                                    foreach(var objectReference in inventoryItemsArray)
                                     {
                                         Guid itemId = Guid.Parse(objectReference.Value);
                                         AsaGameObject? itemObject = arkSavegame.GetObjectByGuid(itemId);
@@ -2255,7 +2435,6 @@ namespace ASVPack.Models
                                             }
                                         }
                                     }
-                                    );
                                     
                                 }
 
@@ -2263,7 +2442,7 @@ namespace ASVPack.Models
                                 if (equippedItemsArray != null)
                                 {
 
-                                    Parallel.ForEach(equippedItemsArray, objectReference =>
+                                    foreach(var objectReference in equippedItemsArray)
                                     {
                                         Guid itemId = Guid.Parse(objectReference.Value);
                                         AsaGameObject? itemObject = arkSavegame.GetObjectByGuid(itemId);
@@ -2279,7 +2458,6 @@ namespace ASVPack.Models
                                             }
                                         }
                                     }
-                                    );
 
                                 }
                             }
@@ -2291,9 +2469,9 @@ namespace ASVPack.Models
                     }
 
                 }
-                );
+                //);
             }
-            );
+            //);
 
             endTicks = DateTime.Now.Ticks;
             timeTaken = TimeSpan.FromTicks(endTicks - startTicks);
@@ -2302,7 +2480,11 @@ namespace ASVPack.Models
             startTicks = DateTime.Now.Ticks;
             // allocate tribe tames
             OnUpdateProgress?.Invoke("ARK save file loaded. Parsing tame data...");
-            arkSavegame.Objects.AsParallel().Where(x => x.IsTamed()).ForAll(x=>
+            var allPlayerTames = allTames.SelectMany(t=>t.Tames).ToList();
+
+            
+            Parallel.ForEach(allPlayerTames,  new ParallelOptions() { MaxDegreeOfParallelism = maxCores }, x=>
+            //foreach(var x in allPlayerTames)
             {
                 //find appropriate tribe to add to
                 var teamId = x.GetPropertyValue<int>("TargetingTeam");
@@ -2317,6 +2499,15 @@ namespace ASVPack.Models
                     if (statusObject != null)
                     {
                         ContentTamedCreature creature = x.AsTamedCreature(statusObject);
+
+                        if (!string.IsNullOrEmpty(creature.ImprintedPlayerNetId))
+                        {
+                            var imprintPlayer = fileTribes.SelectMany(t => t.Players.Where(p => p.NetworkId.Equals(creature.ImprintedPlayerNetId, StringComparison.InvariantCultureIgnoreCase))).FirstOrDefault();
+                            if (imprintPlayer != null)
+                            {
+                                creature.ImprintedPlayerId = imprintPlayer.Id;
+                            }
+                        }
 
                         if (float.IsNaN(creature.Y.GetValueOrDefault(0)))
                         {
@@ -2350,11 +2541,15 @@ namespace ASVPack.Models
                             AsaGameObject? inventoryComponent = arkSavegame.GetObjectByGuid(inventoryId);
                             if (inventoryComponent != null)
                             {
+
+
+
+
                                 List<dynamic>? inventoryItemsArray = inventoryComponent.GetPropertyValue<dynamic>("InventoryItems");
                                 if (inventoryItemsArray != null && inventoryItemsArray.Count > 0)
                                 {
                                  
-                                    Parallel.ForEach(inventoryItemsArray, objectReference =>
+                                    foreach (var objectReference in inventoryItemsArray )
                                     {
                                         Guid itemId = Guid.Parse(objectReference.Value);
                                         AsaGameObject? itemObject = arkSavegame.GetObjectByGuid(itemId);
@@ -2369,55 +2564,103 @@ namespace ASVPack.Models
                                             }
                                         }
                                     }
-                                    );
+                                    
 
 
-                                    List<dynamic>? equippedItemsArray = inventoryComponent.GetPropertyValue<dynamic>("EquippedItems");
-
-                                    if (equippedItemsArray != null)
-                                    {
-
-                                        if (x.ClassString == "TekStrider_Character_BP_C")
-                                        {
-                                            AsaGameObject rig1Object = equippedItemsArray[0];
-                                            if (rig1Object != null)
-                                            {
-                                                var itemRig1 = rig1Object.AsItem();
-                                                creature.Rig1 = itemRig1?.ClassName??"";
-                                            }
-
-                                            if (equippedItemsArray.Count > 1)
-                                            {
-                                                AsaGameObject rig2Object = equippedItemsArray[1];
-                                                var itemRig2 = rig2Object.AsItem();
-                                                creature.Rig2 = itemRig2?.ClassName??"";
-                                            }
-
-                                        }
-                                        else
-                                        {
-                                            //Parallel.ForEach(equippedItemsArray, objectReference =>
-                                            foreach (var objectReference in equippedItemsArray)
-                                            {
-                                                Guid itemId = Guid.Parse(objectReference.Value);
-                                                AsaGameObject itemObject = arkSavegame.GetObjectByGuid(itemId);
-                                                if (itemObject != null)
-                                                {
-                                                    var item = itemObject.AsItem();
-                                                    if (!item.IsEngram)
-                                                    {
-
-                                                        inventoryItems.Add(item);
-                                                    }
-                                                }
-                                            }
-                                            //);
-                                        }
-                                    }
-
-                                    creature.Inventory = new ContentInventory() { Items = inventoryItems.ToList() };
+                                    
 
                                 }
+
+                                List<dynamic>? equippedItemsArray = inventoryComponent.GetPropertyValue<dynamic>("EquippedItems");
+
+                                if (equippedItemsArray != null)
+                                {
+
+                                    if (x.ClassString == "TekStrider_Character_BP_C")
+                                    {
+                                        AsaGameObject rig1Object = equippedItemsArray[0];
+                                        if (rig1Object != null)
+                                        {
+                                            var itemRig1 = rig1Object.AsItem();
+                                            creature.Rig1 = itemRig1?.ClassName ?? "";
+                                        }
+
+                                        if (equippedItemsArray.Count > 1)
+                                        {
+                                            AsaGameObject rig2Object = equippedItemsArray[1];
+                                            var itemRig2 = rig2Object.AsItem();
+                                            creature.Rig2 = itemRig2?.ClassName ?? "";
+                                        }
+
+                                    }
+                                    else
+                                    {
+                                        //Parallel.ForEach(equippedItemsArray, objectReference =>
+                                        foreach (var objectReference in equippedItemsArray)
+                                        {
+                                            Guid itemId = Guid.Parse(objectReference.Value);
+                                            AsaGameObject itemObject = arkSavegame.GetObjectByGuid(itemId);
+                                            if (itemObject != null)
+                                            {
+                                                var item = itemObject.AsItem();
+                                                if (!item.IsEngram)
+                                                {
+
+                                                    inventoryItems.Add(item);
+                                                }
+                                            }
+                                        }
+                                        //);
+                                    }
+                                }
+
+
+
+                                List<dynamic>? inputItemsArray = inventoryComponent.GetPropertyValue<dynamic>("SortingInputs");
+
+                                if (inputItemsArray != null)
+                                {
+                                    foreach (var inputItem in inputItemsArray)
+                                    {
+                                        ContentItem newItem = new ContentItem()
+                                        {
+                                            ClassName = inputItem.Value,
+                                            Quantity = 1,
+                                            IsInput=true
+                                        };
+
+                                        inventoryItems.Add(newItem);
+                                    }
+                                }
+
+                                if (x.HasAnyProperty("FoliageGenerationInfo"))
+                                {
+                                    //oasisaur pool
+                                    List<AsaProperty<dynamic>> foliageInfo = x.Properties.First(p=>p.Name == "FoliageGenerationInfo").Value as List<AsaProperty<dynamic>>;
+                                    List<dynamic> foliageCountInfo = x.Properties.First(p => p.Name == "FoliageInventorySavedQuantities").Value as List<dynamic>;
+
+                                    for (int i = 0; i < foliageInfo.Count; i++)
+                                    {
+                                        string foliageClassName = foliageInfo[i].Name;
+                                        int foliageCount = foliageCountInfo[i];
+
+                                        if (foliageCount > 0)
+                                        {
+                                            ContentItem invItem = new ContentItem(foliageClassName, foliageCount);
+                                            inventoryItems.Add(invItem);
+
+                                        }
+                                    }
+                                }
+
+
+
+                                creature.Inventory = new ContentInventory() { Items = inventoryItems.ToList() };
+
+                            }
+                            else
+                            {
+
                             }
                         }
                         inventoryItems.Clear();
@@ -2427,6 +2670,7 @@ namespace ASVPack.Models
                 }
             }
             );
+
 
             endTicks = DateTime.Now.Ticks;
             timeTaken = TimeSpan.FromTicks(endTicks - startTicks);
@@ -2470,8 +2714,10 @@ namespace ASVPack.Models
             //allocate tribe structures
             startTicks = DateTime.Now.Ticks;
 
-            var allTribeStructures = tribeStructures.SelectMany(x => x.Structures);
-            Parallel.ForEach(allTribeStructures, x =>
+            //var allTribeStructures = tribeStructures.AsParallel().SelectMany(x => x.Structures);
+            //allTribeStructures.ForAll(x =>
+            Parallel.ForEach(tribeStructures.SelectMany(x=>x.Structures),  new ParallelOptions() { MaxDegreeOfParallelism = maxCores }, x =>
+            //foreach(var x in tribeStructures.SelectMany(x => x.Structures)) 
             {
                 var teamId = x.GetPropertyValue<int>("TargetingTeam",0,0);
                 var tribe = fileTribes.FirstOrDefault(t => t.TribeId == teamId) ?? fileTribes.FirstOrDefault(t => t.TribeId == int.MinValue); //tribe or abandoned
@@ -2497,10 +2743,12 @@ namespace ASVPack.Models
                 AsaObjectReference? paintingRef = x.GetPropertyValue<AsaObjectReference?>("PaintingComponent", 0, null);
                 if (paintingRef != null)
                 {
-                    paintingComponent = arkSavegame.Objects.First(o => o.Guid.ToString() == paintingRef.Value);
-                    structure.UniquePaintingId = paintingComponent.GetPropertyValue<int>("UniquePaintingId", 0, 0);
+                    paintingComponent = arkSavegame.GetObjectByGuid(Guid.Parse(paintingRef.Value));
+                    if (paintingComponent != null)
+                    {
+                        structure.UniquePaintingId = paintingComponent.GetPropertyValue<int>("UniquePaintingId", 0, 0);
+                    }                    
                 }
-
 
                 //inventory
                 logWriter.Debug($"Determining inventory status for: {structure.ClassName}");
@@ -2532,7 +2780,7 @@ namespace ASVPack.Models
                         List<dynamic>? inventoryItemsArray = inventoryComponent.GetPropertyValue<dynamic>("InventoryItems", 0, null);
                         if (inventoryItemsArray != null)
                         {
-                            Parallel.ForEach(inventoryItemsArray, objectReference =>
+                            Parallel.ForEach(inventoryItemsArray, new ParallelOptions() { MaxDegreeOfParallelism = maxCores}, objectReference =>
                             {
                                 Guid itemId = Guid.Parse(objectReference.Value);
                                 AsaGameObject? itemObject = arkSavegame.GetObjectByGuid(itemId);
@@ -2550,7 +2798,53 @@ namespace ASVPack.Models
                             }
                             );
                         }
+
+
+                        List<dynamic>? inputItemsArray = inventoryComponent.GetPropertyValue<dynamic>("SortingInputs");
+
+                        if (inputItemsArray != null)
+                        {
+                            foreach (var inputItem in inputItemsArray)
+                            {
+                                ContentItem newItem = new ContentItem()
+                                {
+                                    ClassName = inputItem.Value,
+                                    Quantity = 1,
+                                    IsInput = true
+                                };
+
+                                inventoryItems.Add(newItem);
+                            }
+                        }
+
+                        List<dynamic>? eItemsArray = inventoryComponent.GetPropertyValue<dynamic>("EquippedItems", 0, null);
+                        if (eItemsArray != null)
+                        {
+                            Parallel.ForEach(eItemsArray, new ParallelOptions() { MaxDegreeOfParallelism  =maxCores}, objectReference =>
+                            {
+                                Guid itemId = Guid.Parse(objectReference.Value);
+                                AsaGameObject? itemObject = arkSavegame.GetObjectByGuid(itemId);
+
+                                if (itemObject != null)
+                                {
+                                    var item = itemObject.AsItem();
+                                    if (!item.IsEngram)
+                                    {
+
+                                        inventoryItems.Add(item);
+
+                                    }
+                                }
+                            }
+                            );
+                        }
+
                     }
+                    else
+                    {
+
+                    }
+
 
                     structure.Inventory = new ContentInventory() { Items = inventoryItems.ToList() };
                     inventoryItems.Clear();
@@ -2559,7 +2853,8 @@ namespace ASVPack.Models
 
                 if (tribe != null && !tribe.Structures.Contains(structure)) tribe.Structures.Add(structure);
 
-            });
+            }
+            );
 
             endTicks = DateTime.Now.Ticks;
             timeTaken = TimeSpan.FromTicks(endTicks - startTicks);
@@ -2575,9 +2870,10 @@ namespace ASVPack.Models
             startTicks = DateTime.Now.Ticks;
             DroppedItems = new List<ContentDroppedItem>();
             ConcurrentBag<ContentDroppedItem> droppedItems = new ConcurrentBag<ContentDroppedItem>();
-            
+
             //..items
-            arkSavegame.Objects.AsParallel().Where(o=>o.IsDroppedItem()).ForAll(x =>
+            Parallel.ForEach(arkSavegame.Objects.Where(o=> o.IsDroppedItem()), new ParallelOptions() { MaxDegreeOfParallelism = maxCores }, x =>
+            //arkSavegame.Objects.AsParallel().Where(o=>o.IsDroppedItem()).ForAll(x =>
             {
                 ContentDroppedItem droppedItem = x.AsDroppedItem();
                 AsaObjectReference itemRef = x.GetPropertyValue<AsaObjectReference?>("MyItem", 0, null);
@@ -2610,7 +2906,8 @@ namespace ASVPack.Models
             startTicks = DateTime.Now.Ticks;
             //.. corpses
             ConcurrentBag<ContentDroppedItem> droppedBodies = new ConcurrentBag<ContentDroppedItem>();
-            arkSavegame.Objects.AsParallel().Where(x => x.IsPlayer() && x.HasAnyProperty("MyDeathHarvestingComponent")).ForAll(x =>
+            Parallel.ForEach(arkSavegame.Objects.Where(x => x.IsPlayer() && x.HasAnyProperty("MyDeathHarvestingComponent")), new ParallelOptions() { MaxDegreeOfParallelism = maxCores }, x =>
+            //arkSavegame.Objects.AsParallel().Where(x => x.IsPlayer() && x.HasAnyProperty("MyDeathHarvestingComponent")).ForAll(x =>
             {
                 ContentDroppedItem droppedItem = x.AsDroppedItem();
 
@@ -2635,7 +2932,7 @@ namespace ASVPack.Models
                         if (inventoryItemsArray != null && inventoryItemsArray.Count > 0)
                         {
 
-                            Parallel.ForEach(inventoryItemsArray, objectReference =>
+                            Parallel.ForEach(inventoryItemsArray, new ParallelOptions() { MaxDegreeOfParallelism = maxCores }, objectReference =>
                             {
                                 Guid itemId = Guid.Parse(objectReference.Value);
                                 AsaGameObject? itemObject = arkSavegame.GetObjectByGuid(itemId);
@@ -2698,7 +2995,9 @@ namespace ASVPack.Models
             startTicks = DateTime.Now.Ticks;
             //.. bags
             ConcurrentBag<ContentDroppedItem> droppedBags = new ConcurrentBag<ContentDroppedItem>();
-            arkSavegame.Objects.AsParallel().Where(o => o.IsDeathItemCache()).ForAll(x =>
+
+            Parallel.ForEach(arkSavegame.Objects.Where(x => x.IsDeathItemCache()),  new ParallelOptions() { MaxDegreeOfParallelism = maxCores }, x =>
+            //arkSavegame.Objects.AsParallel().Where(o => o.IsDeathItemCache()).ForAll(x =>
             {
 
                 ContentDroppedItem droppedItem = x.AsDroppedItem();
@@ -2722,7 +3021,7 @@ namespace ASVPack.Models
                         List<dynamic>? inventoryItemsArray = inventoryComponent.GetPropertyValue<dynamic>("InventoryItems", 0, null);
                         if (inventoryItemsArray != null)
                         {
-                            Parallel.ForEach(inventoryItemsArray, objectReference =>
+                            Parallel.ForEach(inventoryItemsArray, new ParallelOptions() { MaxDegreeOfParallelism = maxCores},  objectReference =>
                             {
                                 Guid itemId = Guid.Parse(objectReference.Value);
                                 AsaGameObject? itemObject = arkSavegame.GetObjectByGuid(itemId);
@@ -2762,7 +3061,6 @@ namespace ASVPack.Models
             allTames.Clear();
             playerStructures.Clear();
             tribeStructures.Clear();
-            tribesWithPlayers.Clear();
             fileTribes?.Clear();
             fileProfiles.Clear();
         }

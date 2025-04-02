@@ -6,6 +6,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Data;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -32,6 +33,23 @@ namespace ARKViewer
 
 
 
+        private void ownerDrawCombo_DrawItem(object sender, DrawItemEventArgs e)
+        {
+            if (e.Index < 0) return;
+
+            System.Windows.Forms.ComboBox comboBox = sender as System.Windows.Forms.ComboBox;
+
+            e.DrawBackground();
+
+            Rectangle r1 = e.Bounds;
+            r1.Width = r1.Width;
+
+            using (SolidBrush sb = new SolidBrush(comboBox.ForeColor))
+            {
+                string drawText = comboBox.Items[e.Index].ToString();
+                e.Graphics.DrawString(drawText, e.Font, sb, r1);
+            }
+        }
         private void LoadWindowSettings()
         {
             var savedWindow = ARKViewer.Program.ProgramConfig.Windows.FirstOrDefault(w => w.Name == this.Name);
@@ -80,6 +98,42 @@ namespace ARKViewer
 
 
 
+        private void PopulatePlayerExplorerNotes()
+        {
+            lvwExplorerNotes.BeginUpdate();
+            lvwExplorerNotes.Items.Clear();
+
+            if (currentPlayer.ExplorerNotes != null)
+            {
+                foreach (var noteDescription in currentPlayer.ExplorerNotes)
+                {
+                    ListViewItem item = lvwExplorerNotes.Items.Add(noteDescription);
+                }
+            }
+
+            lvwExplorerNotes.ListViewItemSorter = new ListViewComparer(0, SortOrder.Ascending);
+            lvwExplorerNotes.Sort();
+            lvwExplorerNotes.EndUpdate();
+        }
+        private void PopulatePlayerAchievements()
+        {
+            lvwAchievements.BeginUpdate();
+            lvwAchievements.Items.Clear();
+
+            if (currentPlayer.Achievments != null)
+            {
+                foreach (var achievement in currentPlayer.Achievments)
+                {
+                    ListViewItem item = lvwAchievements.Items.Add(achievement.Description);
+                    item.SubItems.Add(achievement.Level);
+                }
+            }
+
+            lvwAchievements.ListViewItemSorter = new ListViewComparer(0, SortOrder.Ascending);
+            lvwAchievements.Sort();
+            lvwAchievements.EndUpdate();
+        }
+
         private void PopulatePlayerEngrams()
         {
             lvwEngrams.BeginUpdate();
@@ -87,6 +141,7 @@ namespace ARKViewer
 
             if (currentPlayer.Engrams != null)
             {
+
                 //var playerItems = selectedPlayer.Creatures;
 
                 ConcurrentBag<ListViewItem> listItems = new ConcurrentBag<ListViewItem>();
@@ -155,7 +210,7 @@ namespace ARKViewer
                 Parallel.ForEach(playerHairstyles, invItem =>
                 {
                     string itemName = invItem.ClassName;
-                    
+
                     int itemIcon = 0;
                     var itemMap = Program.ProgramConfig.ItemMap.Where(i => i.ClassName == invItem.ClassName).FirstOrDefault<ItemClassMap>();
                     if (itemMap != null && itemMap.ClassName != "")
@@ -293,8 +348,8 @@ namespace ARKViewer
                         if (!invItem.IsEngram)
                         {
                             string qualityName = "";
-                            Color backColor = SystemColors.Window;
-                            Color foreColor = SystemColors.WindowText;
+                            Color backColor = lvwPlayerInventory.BackColor;
+                            Color foreColor = lvwPlayerInventory.ForeColor;
                             if (invItem.Rating.HasValue)
                             {
                                 var itemQuality = Program.GetQualityByRating(invItem.Rating.Value);
@@ -341,7 +396,7 @@ namespace ARKViewer
         private void PopulateMissionScores()
         {
             lvwPlayerScores.Items.Clear();
-            foreach(var score in currentPlayer.MissionScores)
+            foreach (var score in currentPlayer.MissionScores)
             {
                 ListViewItem item = lvwPlayerScores.Items.Add(score.MissionTag);
                 item.SubItems.Add(score.HighScore.ToString("f2"));
@@ -421,8 +476,8 @@ namespace ARKViewer
                         {
 
                             string qualityName = "";
-                            Color backColor = SystemColors.Window;
-                            Color foreColor = SystemColors.WindowText;
+                            Color backColor = lvwCreatureInventory.BackColor;
+                            Color foreColor = lvwCreatureInventory.ForeColor;
                             if (invItem.Rating.HasValue)
                             {
                                 var itemQuality = Program.GetQualityByRating(invItem.Rating.Value);
@@ -487,6 +542,7 @@ namespace ARKViewer
                     g.CustomName,
                     g.IsBlueprint,
                     g.IsEngram,
+                    g.IsInput,
                     g.Rating
                 }).Select(s => new ContentItem
                 {
@@ -497,11 +553,12 @@ namespace ARKViewer
                     IsBlueprint = s.Key.IsBlueprint,
                     IsEngram = s.Key.IsEngram,
                     Rating = s.Key.Rating,
+                    IsInput = s.Key.IsInput,
                     Quantity = s.Sum(i => i.Quantity)
                 }).ToList();
 
 
-                Parallel.ForEach(inventItems, invItem =>  
+                Parallel.ForEach(inventItems, invItem =>
                 {
                     string itemName = invItem.ClassName;
                     string categoryName = "Misc.";
@@ -521,7 +578,7 @@ namespace ARKViewer
                         if (itemMap != null && itemMap.DisplayName != null)
                         {
                             itemName = itemMap.DisplayName;
-                            categoryName = itemMap.Category;
+                            categoryName = itemMap.Category??"Misc.";
                         }
                     }
 
@@ -531,8 +588,8 @@ namespace ARKViewer
                         if (!invItem.IsEngram)
                         {
                             string qualityName = "";
-                            Color backColor = SystemColors.Window;
-                            Color foreColor = SystemColors.WindowText;
+                            Color backColor = lvwStorageInventory.BackColor;
+                            Color foreColor = lvwStorageInventory.ForeColor;
                             if (invItem.Rating.HasValue)
                             {
                                 var itemQuality = Program.GetQualityByRating(invItem.Rating.Value);
@@ -552,6 +609,7 @@ namespace ARKViewer
                             newItem.BackColor = backColor;
                             newItem.ForeColor = foreColor;
 
+                            newItem.SubItems.Add(invItem.IsInput ? "Yes" : "No");
                             newItem.SubItems.Add(invItem.IsBlueprint ? "Yes" : "No");
                             newItem.SubItems.Add(categoryName);
                             newItem.SubItems.Add(qualityName);
@@ -569,7 +627,7 @@ namespace ARKViewer
                     }
 
                 });
-                
+
             });
 
             lvwStorageInventory.Items.AddRange(listItems.ToArray());
@@ -584,25 +642,25 @@ namespace ARKViewer
             cm = manager;
             currentPlayer = selectedPlayer;
             playerTribe = cm.GetPlayerTribe(currentPlayer.Id);
-            playerInventory = selectedPlayer.Inventory.Items.GroupBy(g=> new 
-            { 
-                g.ClassName, 
-                g.CraftedByTribe, 
+            playerInventory = selectedPlayer.Inventory.Items.GroupBy(g => new
+            {
+                g.ClassName,
+                g.CraftedByTribe,
                 g.CraftedByPlayer,
                 g.CustomName,
-                g.IsBlueprint, 
-                g.IsEngram, 
+                g.IsBlueprint,
+                g.IsEngram,
                 g.Rating
-            }).Select(s=> new ContentItem  
-            { 
-                ClassName =  s.Key.ClassName,
-                CraftedByTribe = s.Key.CraftedByTribe, 
-                CraftedByPlayer = s.Key.CraftedByPlayer, 
-                CustomName = s.Key.CustomName, 
-                IsBlueprint = s.Key.IsBlueprint, 
-                IsEngram  = s.Key.IsEngram, 
-                Rating = s.Key.Rating, 
-                Quantity = s.Sum(i=> i.Quantity) 
+            }).Select(s => new ContentItem
+            {
+                ClassName = s.Key.ClassName,
+                CraftedByTribe = s.Key.CraftedByTribe,
+                CraftedByPlayer = s.Key.CraftedByPlayer,
+                CustomName = s.Key.CustomName,
+                IsBlueprint = s.Key.IsBlueprint,
+                IsEngram = s.Key.IsEngram,
+                Rating = s.Key.Rating,
+                Quantity = s.Sum(i => i.Quantity)
             }).ToList();
 
             lvwCreatureInventory.SmallImageList = Program.ItemImageList;
@@ -626,6 +684,8 @@ namespace ARKViewer
 
             PopulatePersonalInventory();
             PopulatePlayerEngrams();
+            PopulatePlayerAchievements();
+            PopulatePlayerExplorerNotes();
 
 
             //get list of tamed dino types
@@ -642,7 +702,7 @@ namespace ARKViewer
 
             //get list of inventory containers
             List<ContentStructure> tribeStructures = new List<ContentStructure>();
-            var playerStructures = playerTribe.Structures.Where(s => s.Inventory.Items.Count >0);
+            var playerStructures = playerTribe.Structures.Where(s => s.Inventory.Items.Count > 0);
             if (playerStructures != null && playerStructures.Count() > 0)
             {
                 tribeStructures.AddRange(playerStructures);
@@ -1068,6 +1128,28 @@ namespace ARKViewer
 
             // Sort.
             lvwEngrams.Sort();
+        }
+
+        private void lblPlayerId_Click(object sender, EventArgs e)
+        {
+            Clipboard.SetText(lblPlayerId.Text.Replace("Player Id:", ""));
+            MessageBox.Show("Player Id copied to clipboard.", "Copied", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        private void chkApplyFilterStorage_CheckedChanged(object sender, EventArgs e)
+        {
+            txtStorageFilter.Enabled = !chkApplyFilterStorage.Checked;
+            if (chkApplyFilterStorage.Checked)
+            {
+                txtStorageFilter.Enabled = false;
+            }
+            else
+            {
+                txtStorageFilter.Enabled = true;
+                txtStorageFilter.Text = string.Empty;
+                txtStorageFilter.Focus();
+            }
+            PopulateStructureInventory();
         }
     }
 }
